@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { Nav } from "@/components/nav";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -25,7 +26,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body className="bg-void text-ink-primary antialiased">
-        {children}
+        <Nav />
+        <main className="max-w-7xl mx-auto px-4 py-6">
+          {children}
+        </main>
       </body>
     </html>
   );
