@@ -11,10 +11,12 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+// EthClient wraps go-ethereum's ethclient for querying x402 event logs.
 type EthClient struct {
 	client *ethclient.Client
 }
 
+// NewEthClient connects to the given RPC URL and returns an EthClient.
 func NewEthClient(rpcURL string) (*EthClient, error) {
 	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
@@ -23,10 +25,12 @@ func NewEthClient(rpcURL string) (*EthClient, error) {
 	return &EthClient{client: client}, nil
 }
 
+// Close closes the underlying RPC connection.
 func (c *EthClient) Close() {
 	c.client.Close()
 }
 
+// CurrentBlock returns the latest block number.
 func (c *EthClient) CurrentBlock(ctx context.Context) (int64, error) {
 	header, err := c.client.HeaderByNumber(ctx, nil)
 	if err != nil {
@@ -35,6 +39,7 @@ func (c *EthClient) CurrentBlock(ctx context.Context) (int64, error) {
 	return header.Number.Int64(), nil
 }
 
+// FetchSettledEvents queries Settled and SettledWithPermit events from proxy contracts.
 func (c *EthClient) FetchSettledEvents(ctx context.Context, fromBlock, toBlock int64) ([]types.Log, error) {
 	q := c.buildSettledFilter(fromBlock, toBlock)
 	logs, err := c.client.FilterLogs(ctx, q)
@@ -44,6 +49,7 @@ func (c *EthClient) FetchSettledEvents(ctx context.Context, fromBlock, toBlock i
 	return logs, nil
 }
 
+// FetchUSDCTransfers queries USDC Transfer events in the given block range.
 func (c *EthClient) FetchUSDCTransfers(ctx context.Context, fromBlock, toBlock int64) ([]types.Log, error) {
 	q := c.buildTransferFilter(fromBlock, toBlock)
 	logs, err := c.client.FilterLogs(ctx, q)
@@ -53,6 +59,7 @@ func (c *EthClient) FetchUSDCTransfers(ctx context.Context, fromBlock, toBlock i
 	return logs, nil
 }
 
+// TransactionSender returns the from address of a transaction.
 func (c *EthClient) TransactionSender(ctx context.Context, txHash common.Hash) (common.Address, error) {
 	tx, _, err := c.client.TransactionByHash(ctx, txHash)
 	if err != nil {
@@ -65,6 +72,7 @@ func (c *EthClient) TransactionSender(ctx context.Context, txHash common.Hash) (
 	return sender, nil
 }
 
+// BlockTimestamp returns the timestamp for a block number.
 func (c *EthClient) BlockTimestamp(ctx context.Context, blockNumber int64) (uint64, error) {
 	header, err := c.client.HeaderByNumber(ctx, big.NewInt(blockNumber))
 	if err != nil {

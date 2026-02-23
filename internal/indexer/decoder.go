@@ -12,6 +12,7 @@ import (
 	"github.com/yamanakbas/agora/internal/models"
 )
 
+// Event topic hashes for x402 settlement and ERC-20 transfer events.
 var (
 	SettledTopic           = crypto.Keccak256Hash([]byte("Settled()"))
 	SettledWithPermitTopic = crypto.Keccak256Hash([]byte("SettledWithPermit()"))
@@ -20,6 +21,11 @@ var (
 
 const usdcDecimals = 6
 
+// MatchSettledWithTransfers joins Settled/SettledWithPermit events with USDC Transfer
+// events by tx hash. Returns matched transactions.
+//
+// blockTimes maps block numbers to timestamps.
+// txSenders maps tx hashes to the address that submitted the transaction (the facilitator).
 func MatchSettledWithTransfers(
 	settledLogs []types.Log,
 	transferLogs []types.Log,
@@ -68,6 +74,8 @@ func MatchSettledWithTransfers(
 	return results
 }
 
+// decodeTransfer extracts from, to, and value from a USDC Transfer event log.
+// Transfer(address indexed from, address indexed to, uint256 value)
 func decodeTransfer(log types.Log) (from, to common.Address, value *big.Int) {
 	if len(log.Topics) < 3 {
 		return common.Address{}, common.Address{}, big.NewInt(0)
@@ -81,6 +89,7 @@ func decodeTransfer(log types.Log) (from, to common.Address, value *big.Int) {
 	return from, to, value
 }
 
+// usdcToFloat converts a raw USDC amount (6 decimals) to a float64.
 func usdcToFloat(amount *big.Int) float64 {
 	f := new(big.Float).SetInt(amount)
 	divisor := new(big.Float).SetFloat64(math.Pow(10, usdcDecimals))
