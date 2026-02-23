@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: agora
+      POSTGRES_PASSWORD: agora
+      POSTGRES_DB: agora
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

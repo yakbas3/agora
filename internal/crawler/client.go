@@ -126,6 +126,12 @@ func (c *Client) FetchAllPages(ctx context.Context, concurrency int) ([]BazaarIt
 	for i, offset := range offsets {
 		i, offset := i, offset
 		g.Go(func() error {
+			// Rate-limit delay between page fetches
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			resp, err := c.FetchPage(ctx, offset)
 			if err != nil {
 				return fmt.Errorf("fetch page at offset %d: %w", offset, err)
