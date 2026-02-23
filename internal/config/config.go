@@ -13,6 +13,9 @@ type Config struct {
 	CrawlerConcurrency int    `envconfig:"CRAWLER_CONCURRENCY" default:"3"`
 	CrawlerMaxRetries  int    `envconfig:"CRAWLER_MAX_RETRIES" default:"5"`
 	OpenAIAPIKey       string `envconfig:"OPENAI_API_KEY"`
+	BaseRPCURL         string `envconfig:"BASE_RPC_URL"`
+	IndexerBlockRange  int64  `envconfig:"INDEXER_BLOCK_RANGE" default:"2000"`
+	IndexerStartBlock  int64  `envconfig:"INDEXER_START_BLOCK" default:"25000000"`
 }
 
 func Load() (*Config, error) {
