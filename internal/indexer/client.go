@@ -3,13 +3,18 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
+	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
+
+const maxRetries = 5
 
 // EthClient wraps go-ethereum's ethclient for querying x402 event logs.
 type EthClient struct {
@@ -42,21 +47,44 @@ func (c *EthClient) CurrentBlock(ctx context.Context) (int64, error) {
 // FetchSettledEvents queries Settled and SettledWithPermit events from proxy contracts.
 func (c *EthClient) FetchSettledEvents(ctx context.Context, fromBlock, toBlock int64) ([]types.Log, error) {
 	q := c.buildSettledFilter(fromBlock, toBlock)
-	logs, err := c.client.FilterLogs(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("filter settled logs [%d-%d]: %w", fromBlock, toBlock, err)
-	}
-	return logs, nil
+	return c.filterLogsWithRetry(ctx, q, fmt.Sprintf("settled [%d-%d]", fromBlock, toBlock))
 }
 
 // FetchUSDCTransfers queries USDC Transfer events in the given block range.
 func (c *EthClient) FetchUSDCTransfers(ctx context.Context, fromBlock, toBlock int64) ([]types.Log, error) {
 	q := c.buildTransferFilter(fromBlock, toBlock)
-	logs, err := c.client.FilterLogs(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("filter USDC transfer logs [%d-%d]: %w", fromBlock, toBlock, err)
+	return c.filterLogsWithRetry(ctx, q, fmt.Sprintf("USDC transfers [%d-%d]", fromBlock, toBlock))
+}
+
+// filterLogsWithRetry calls FilterLogs with exponential backoff on 429/503 errors.
+func (c *EthClient) filterLogsWithRetry(ctx context.Context, q ethereum.FilterQuery, desc string) ([]types.Log, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(math.Pow(2, float64(attempt-1))) * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		logs, err := c.client.FilterLogs(ctx, q)
+		if err != nil {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "429") || strings.Contains(errMsg, "Too Many Requests") ||
+				strings.Contains(errMsg, "503") || strings.Contains(errMsg, "Service Unavailable") {
+				lastErr = err
+				continue
+			}
+			return nil, fmt.Errorf("filter %s: %w", desc, err)
+		}
+		return logs, nil
 	}
-	return logs, nil
+	return nil, fmt.Errorf("filter %s: exhausted %d retries: %w", desc, maxRetries, lastErr)
 }
 
 // TransactionSender returns the from address of a transaction.
@@ -100,6 +128,7 @@ func (c *EthClient) buildTransferFilter(fromBlock, toBlock int64) ethereum.Filte
 	}
 }
 
+// blockWindows divides a block range into fixed-size windows.
 func blockWindows(from, to, windowSize int64) [][2]int64 {
 	var windows [][2]int64
 	for start := from; start <= to; start += windowSize {
