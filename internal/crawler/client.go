@@ -63,6 +63,10 @@ func (c *Client) FetchPage(ctx context.Context, offset int) (*BazaarResponse, er
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("read response body: %w", err)
+			continue
+		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
@@ -70,11 +74,6 @@ func (c *Client) FetchPage(ctx context.Context, offset int) (*BazaarResponse, er
 		}
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("unexpected HTTP %d from %s", resp.StatusCode, url)
-		}
-
-		if err != nil {
-			lastErr = fmt.Errorf("read response body: %w", err)
-			continue
 		}
 
 		var bazaarResp BazaarResponse

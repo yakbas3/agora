@@ -41,7 +41,10 @@ func (r *Repository) CompleteCrawlRun(ctx context.Context, id uuid.UUID, totalFe
 		 WHERE id = $1`,
 		id, time.Now().UTC(), totalFetched, newEndpoints, updatedEndpoints,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("complete crawl run: %w", err)
+	}
+	return nil
 }
 
 // FailCrawlRun marks a crawl run as failed with an error message.
@@ -52,7 +55,10 @@ func (r *Repository) FailCrawlRun(ctx context.Context, id uuid.UUID, crawlErr st
 		 WHERE id = $1`,
 		id, time.Now().UTC(), crawlErr,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("fail crawl run: %w", err)
+	}
+	return nil
 }
 
 // UpsertEndpoint inserts or updates an endpoint and replaces its payment options.
