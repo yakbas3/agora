@@ -15,3 +15,8 @@ Thumbs.db
 
 # Go
 /vendor/
+
+# Frontend
+web/node_modules/
+web/.next/
+web/out/
