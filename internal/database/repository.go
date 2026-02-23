@@ -173,3 +173,103 @@ func (r *Repository) UpsertEndpoint(ctx context.Context, endpoint models.Endpoin
 
 	return isNew, isUpdated, nil
 }
+
+// GetLastIndexedBlock returns the last fully indexed block number.
+func (r *Repository) GetLastIndexedBlock(ctx context.Context) (int64, error) {
+	var lastBlock int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT last_block FROM indexer_state WHERE id = 1`,
+	).Scan(&lastBlock)
+	if err != nil {
+		return 0, fmt.Errorf("get last indexed block: %w", err)
+	}
+	return lastBlock, nil
+}
+
+// UpdateLastIndexedBlock sets the last fully indexed block number.
+func (r *Repository) UpdateLastIndexedBlock(ctx context.Context, blockNumber int64) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE indexer_state SET last_block = $1, updated_at = $2 WHERE id = 1`,
+		blockNumber, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("update last indexed block: %w", err)
+	}
+	return nil
+}
+
+// InsertTransactions batch-inserts transactions, skipping duplicates (ON CONFLICT DO NOTHING).
+func (r *Repository) InsertTransactions(ctx context.Context, txs []models.Transaction) (int, error) {
+	if len(txs) == 0 {
+		return 0, nil
+	}
+
+	batch := &pgx.Batch{}
+	for _, tx := range txs {
+		batch.Queue(
+			`INSERT INTO transactions (id, tx_hash, block_number, block_time, event_type,
+			   proxy_contract, facilitator_address, payer_address, recipient_address,
+			   amount_raw, amount_usd, asset_address, indexed_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			 ON CONFLICT (tx_hash) DO NOTHING`,
+			tx.ID, tx.TxHash, tx.BlockNumber, tx.BlockTime, tx.EventType,
+			tx.ProxyContract, tx.FacilitatorAddress, tx.PayerAddress,
+			tx.RecipientAddress, tx.AmountRaw, tx.AmountUSD, tx.AssetAddress,
+			tx.IndexedAt,
+		)
+	}
+
+	br := r.pool.SendBatch(ctx, batch)
+	inserted := 0
+	for range txs {
+		ct, err := br.Exec()
+		if err != nil {
+			br.Close()
+			return inserted, fmt.Errorf("insert transaction: %w", err)
+		}
+		if ct.RowsAffected() > 0 {
+			inserted++
+		}
+	}
+	br.Close()
+
+	return inserted, nil
+}
+
+// RefreshEndpointScores refreshes the endpoint_scores materialized view.
+func (r *Repository) RefreshEndpointScores(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW CONCURRENTLY endpoint_scores`)
+	if err != nil {
+		return fmt.Errorf("refresh endpoint_scores: %w", err)
+	}
+	return nil
+}
+
+// RefreshDiscoveredSellers updates the discovered_sellers table from unmatched transactions.
+func (r *Repository) RefreshDiscoveredSellers(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO discovered_sellers (pay_to, tx_count, total_volume_usd, unique_payers, first_seen_at, last_seen_at)
+		SELECT
+			t.recipient_address,
+			COUNT(*)::INTEGER,
+			COALESCE(SUM(t.amount_usd), 0),
+			COUNT(DISTINCT t.payer_address)::INTEGER,
+			MIN(t.block_time),
+			MAX(t.block_time)
+		FROM transactions t
+		WHERE NOT EXISTS (
+			SELECT 1 FROM payment_options po WHERE po.pay_to = t.recipient_address
+		)
+		GROUP BY t.recipient_address
+		ON CONFLICT (pay_to) DO UPDATE SET
+			tx_count = EXCLUDED.tx_count,
+			total_volume_usd = EXCLUDED.total_volume_usd,
+			unique_payers = EXCLUDED.unique_payers,
+			first_seen_at = EXCLUDED.first_seen_at,
+			last_seen_at = EXCLUDED.last_seen_at
+	`)
+	if err != nil {
+		return fmt.Errorf("refresh discovered_sellers: %w", err)
+	}
+	return nil
+}
