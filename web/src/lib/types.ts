@@ -1,6 +1,3 @@
-// TypeScript types mirroring Go models in internal/models/
-// with additional UI-specific fields for the frontend.
-
 export interface Endpoint {
   id: string;
   resourceUrl: string;
@@ -11,12 +8,11 @@ export interface Endpoint {
   httpMethod: string;
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
-  lastUpdated: string; // ISO date
-  firstSeen: string; // ISO date
-  lastCrawled: string; // ISO date
-  // UI-only fields (will come from reliability layer later)
-  reliabilityScore: number; // 0-100
-  reliabilityTrend: number[]; // last 30 days, 0-100 each
+  lastUpdated: string;
+  firstSeen: string;
+  lastCrawled: string;
+  reliabilityScore?: number;
+  reliabilityTrend?: number[];
   paymentOptions: PaymentOption[];
 }
 
@@ -40,7 +36,7 @@ export interface Facilitator {
   domain: string;
   endpointCount: number;
   avgReliability: number;
-  reliabilityTrend: number[]; // last 30 days
+  reliabilityTrend: number[];
   networks: string[];
   assets: string[];
   status: "healthy" | "degraded" | "inactive";
@@ -59,11 +55,9 @@ export interface CrawlRun {
 export interface NetworkStats {
   totalEndpoints: number;
   totalDomains: number;
-  totalFacilitators: number;
-  lastCrawl: string;
-  endpointsByNetwork: { network: string; count: number }[];
-  endpointsByAsset: { asset: string; count: number }[];
-  endpointsByPriceBracket: { bracket: string; count: number }[];
+  endpointsByNetwork: { name: string; count: number }[];
+  endpointsByAsset: { name: string; count: number }[];
+  endpointsByPriceBracket: { name: string; count: number }[];
   endpointsOverTime: { date: string; count: number }[];
   crawlHistory: CrawlRun[];
 }
