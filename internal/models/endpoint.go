@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 )
 
 type Endpoint struct {
@@ -21,4 +22,5 @@ type Endpoint struct {
 	LastUpdated  time.Time       `db:"last_updated"`
 	FirstSeen    time.Time       `db:"first_seen"`
 	LastCrawled  time.Time       `db:"last_crawled"`
+	Embedding    pgvector.Vector `db:"embedding"`
 }
