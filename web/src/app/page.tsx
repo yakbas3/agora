@@ -1,63 +1,88 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { SearchBar } from "@/components/search-bar";
 import { FilterChips } from "@/components/filter-chips";
 import { EndpointsTable } from "@/components/endpoints-table";
-import { endpoints } from "@/lib/dummy-data";
+import { fetchEndpoints, searchEndpoints } from "@/lib/api";
+import { transformEndpointWithPayments, transformSearchResult } from "@/lib/transforms";
+import type { Endpoint } from "@/lib/types";
 
 const filterGroups = [
-  { label: "Network", options: ["Base", "Ethereum", "Arbitrum"] },
-  { label: "Asset", options: ["USDC", "ETH", "DAI"] },
-  { label: "Reliability", options: [">90%", ">70%", ">50%"] },
+  { label: "Network", options: ["base", "ethereum", "arbitrum"] },
   { label: "Method", options: ["GET", "POST"] },
 ];
 
 export default function EndpointsPage() {
+  const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
+  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const filtered = useMemo(() => {
-    let result = endpoints;
-    if (query) {
-      const q = query.toLowerCase();
-      result = result.filter(
-        (ep) =>
-          ep.resourceUrl.toLowerCase().includes(q) ||
-          ep.description.toLowerCase().includes(q) ||
-          ep.domain.toLowerCase().includes(q)
-      );
+  const load = useCallback(async (q: string, f: Record<string, string | null>) => {
+    setLoading(true);
+    setError(null);
+    try {
+      if (q.trim()) {
+        const apiFilters: Record<string, string> = {};
+        if (f.Network) apiFilters.network = f.Network;
+        if (f.Method) apiFilters.method = f.Method;
+        const res = await searchEndpoints(q, apiFilters, 20);
+        setEndpoints((res.results || []).map(transformSearchResult));
+        setTotal(res.total);
+      } else {
+        const res = await fetchEndpoints(20, 0);
+        const transformed = (res || []).map(transformEndpointWithPayments);
+        setEndpoints(transformed);
+        setTotal(transformed.length);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
     }
-    if (filters.Network) {
-      result = result.filter((ep) =>
-        ep.paymentOptions.some((po) => po.networkNormalized.toLowerCase() === filters.Network!.toLowerCase())
-      );
-    }
-    if (filters.Asset) {
-      result = result.filter((ep) =>
-        ep.paymentOptions.some((po) => po.assetName === filters.Asset)
-      );
-    }
-    if (filters.Method) {
-      result = result.filter((ep) => ep.httpMethod === filters.Method);
-    }
-    if (filters.Reliability) {
-      const threshold = parseInt(filters.Reliability!.replace(/[>%]/g, ""));
-      result = result.filter((ep) => ep.reliabilityScore >= threshold);
-    }
-    return result;
-  }, [query, filters]);
+  }, []);
+
+  useEffect(() => {
+    load("", {});
+  }, [load]);
+
+  const handleSearch = (q: string) => {
+    setQuery(q);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => load(q, filters), 300);
+  };
+
+  const handleFilterChange = (f: Record<string, string | null>) => {
+    setFilters(f);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => load(query, f), 300);
+  };
 
   return (
-    <div className="space-y-4">
-      <SearchBar onSearch={setQuery} />
-      <FilterChips groups={filterGroups} onFilterChange={setFilters} />
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-ink-tertiary">
-          {filtered.length} endpoint{filtered.length !== 1 ? "s" : ""}
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold tracking-tight">Endpoints</h1>
+        <p className="text-sm text-ink-secondary mt-1">
+          {loading ? (
+            <span className="text-ink-tertiary">Loading...</span>
+          ) : error ? (
+            <span className="text-failure">{error}</span>
+          ) : (
+            <>
+              <span className="font-mono text-ink-primary">{endpoints.length}</span>{" "}
+              {query ? `results for "${query}"` : "endpoints"}{" "}
+              {query && <span className="text-ink-tertiary">(semantic search)</span>}
+            </>
+          )}
         </p>
       </div>
-      <EndpointsTable endpoints={filtered} />
+      <SearchBar onSearch={handleSearch} />
+      <FilterChips groups={filterGroups} onFilterChange={handleFilterChange} />
+      {!loading && !error && <EndpointsTable endpoints={endpoints} />}
     </div>
   );
 }

@@ -931,28 +931,26 @@ function generateEndpointsOverTime(): { date: string; count: number }[] {
 export const networkStats: NetworkStats = {
   totalEndpoints: 12571,
   totalDomains: 847,
-  totalFacilitators: 13,
-  lastCrawl: ago(2),
 
   endpointsByNetwork: [
-    { network: "base", count: 9842 },
-    { network: "ethereum", count: 1653 },
-    { network: "arbitrum", count: 724 },
-    { network: "optimism", count: 352 },
+    { name: "base", count: 9842 },
+    { name: "ethereum", count: 1653 },
+    { name: "arbitrum", count: 724 },
+    { name: "optimism", count: 352 },
   ],
 
   endpointsByAsset: [
-    { asset: "USDC", count: 10234 },
-    { asset: "ETH", count: 1287 },
-    { asset: "DAI", count: 643 },
-    { asset: "WETH", count: 407 },
+    { name: "USDC", count: 10234 },
+    { name: "ETH", count: 1287 },
+    { name: "DAI", count: 643 },
+    { name: "WETH", count: 407 },
   ],
 
   endpointsByPriceBracket: [
-    { bracket: "$0-0.001", count: 4821 },
-    { bracket: "$0.001-0.01", count: 5134 },
-    { bracket: "$0.01-0.1", count: 2103 },
-    { bracket: "$0.1+", count: 513 },
+    { name: "$0-0.001", count: 4821 },
+    { name: "$0.001-0.01", count: 5134 },
+    { name: "$0.01-0.1", count: 2103 },
+    { name: "$0.1+", count: 513 },
   ],
 
   endpointsOverTime: generateEndpointsOverTime(),
