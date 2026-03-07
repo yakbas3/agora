@@ -374,3 +374,81 @@ func (r *Repository) SearchByVector(ctx context.Context, vector pgvector.Vector,
 	}
 	return results, rows.Err()
 }
+
+// GetEndpoints returns a paginated list of endpoints.
+func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]models.Endpoint, error) {
+	q := `
+		SELECT id, resource_url, domain, type, x402_version, description,
+		       http_method, input_schema, output_schema, raw_metadata,
+		       last_updated, first_seen, last_crawled
+		FROM endpoints
+		ORDER BY last_crawled DESC
+		LIMIT $1 OFFSET $2
+	`
+	rows, err := r.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("get endpoints: %w", err)
+	}
+	defer rows.Close()
+
+	var endpoints []models.Endpoint
+	for rows.Next() {
+		var e models.Endpoint
+		err := rows.Scan(
+			&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
+			&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
+			&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan endpoint: %w", err)
+		}
+		endpoints = append(endpoints, e)
+	}
+	return endpoints, rows.Err()
+}
+
+// GetEndpointByID returns a single endpoint with its payment options.
+func (r *Repository) GetEndpointByID(ctx context.Context, id uuid.UUID) (*models.Endpoint, []models.PaymentOption, error) {
+	eq := `
+		SELECT id, resource_url, domain, type, x402_version, description,
+		       http_method, input_schema, output_schema, raw_metadata,
+		       last_updated, first_seen, last_crawled
+		FROM endpoints WHERE id = $1
+	`
+	var e models.Endpoint
+	err := r.pool.QueryRow(ctx, eq, id).Scan(
+		&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
+		&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
+		&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get endpoint: %w", err)
+	}
+
+	pq := `
+		SELECT id, endpoint_id, scheme, network_raw, network_normalized,
+		       asset_address, asset_name, max_amount_raw, price_usd,
+		       pay_to, max_timeout_seconds, mime_type, description, output_schema_raw
+		FROM payment_options WHERE endpoint_id = $1
+	`
+	rows, err := r.pool.Query(ctx, pq, id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get payment options: %w", err)
+	}
+	defer rows.Close()
+
+	var pos []models.PaymentOption
+	for rows.Next() {
+		var po models.PaymentOption
+		err := rows.Scan(
+			&po.ID, &po.EndpointID, &po.Scheme, &po.NetworkRaw, &po.NetworkNormalized,
+			&po.AssetAddress, &po.AssetName, &po.MaxAmountRaw, &po.PriceUSD,
+			&po.PayTo, &po.MaxTimeoutSeconds, &po.MimeType, &po.Description, &po.OutputSchemaRaw,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scan payment option: %w", err)
+		}
+		pos = append(pos, po)
+	}
+	return &e, pos, rows.Err()
+}
