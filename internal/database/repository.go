@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 	"github.com/yamanakbas/agora/internal/models"
 )
 
@@ -272,4 +273,104 @@ func (r *Repository) RefreshDiscoveredSellers(ctx context.Context) error {
 		return fmt.Errorf("refresh discovered_sellers: %w", err)
 	}
 	return nil
+}
+
+// SearchFilters holds optional filters for semantic search.
+type SearchFilters struct {
+	Network  string
+	Method   string
+	MinPrice *float64
+	MaxPrice *float64
+}
+
+// SearchResult holds an endpoint with its similarity score.
+type SearchResult struct {
+	Endpoint   models.Endpoint
+	Similarity float64
+}
+
+func buildSearchQuery(filters SearchFilters, limit int) (string, []any) {
+	// $1 is always the query vector, filled by caller
+	args := []any{nil} // placeholder for vector
+	argIdx := 2
+
+	joins := ""
+	where := "WHERE e.embedding IS NOT NULL"
+
+	if filters.Network != "" {
+		joins = "JOIN payment_options po ON po.endpoint_id = e.id"
+		where += fmt.Sprintf(" AND po.network_normalized = $%d", argIdx)
+		args = append(args, filters.Network)
+		argIdx++
+	}
+
+	if filters.Method != "" {
+		where += fmt.Sprintf(" AND e.http_method = $%d", argIdx)
+		args = append(args, filters.Method)
+		argIdx++
+	}
+
+	needsPO := filters.MinPrice != nil || filters.MaxPrice != nil
+	if needsPO && joins == "" {
+		joins = "JOIN payment_options po ON po.endpoint_id = e.id"
+	}
+
+	if filters.MinPrice != nil {
+		where += fmt.Sprintf(" AND po.price_usd >= $%d", argIdx)
+		args = append(args, *filters.MinPrice)
+		argIdx++
+	}
+
+	if filters.MaxPrice != nil {
+		where += fmt.Sprintf(" AND po.price_usd <= $%d", argIdx)
+		args = append(args, *filters.MaxPrice)
+		argIdx++
+	}
+
+	q := fmt.Sprintf(`
+		SELECT DISTINCT ON (e.id)
+			e.id, e.resource_url, e.domain, e.type, e.x402_version,
+			e.description, e.http_method, e.input_schema, e.output_schema,
+			e.raw_metadata, e.last_updated, e.first_seen, e.last_crawled,
+			1 - (e.embedding <=> $1) AS similarity
+		FROM endpoints e
+		%s
+		%s
+		ORDER BY e.id, similarity DESC
+	`, joins, where)
+
+	// Wrap to re-order by similarity and apply limit
+	q = fmt.Sprintf(`SELECT * FROM (%s) sub ORDER BY similarity DESC LIMIT $%d`, q, argIdx)
+	args = append(args, limit)
+
+	return q, args
+}
+
+// SearchByVector finds the most similar endpoints to the given vector.
+func (r *Repository) SearchByVector(ctx context.Context, vector pgvector.Vector, filters SearchFilters, limit int) ([]SearchResult, error) {
+	q, args := buildSearchQuery(filters, limit)
+	args[0] = vector // fill the vector placeholder
+
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var sr SearchResult
+		err := rows.Scan(
+			&sr.Endpoint.ID, &sr.Endpoint.ResourceURL, &sr.Endpoint.Domain,
+			&sr.Endpoint.Type, &sr.Endpoint.X402Version, &sr.Endpoint.Description,
+			&sr.Endpoint.HTTPMethod, &sr.Endpoint.InputSchema, &sr.Endpoint.OutputSchema,
+			&sr.Endpoint.RawMetadata, &sr.Endpoint.LastUpdated, &sr.Endpoint.FirstSeen,
+			&sr.Endpoint.LastCrawled, &sr.Similarity,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		results = append(results, sr)
+	}
+	return results, rows.Err()
 }
