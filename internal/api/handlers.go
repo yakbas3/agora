@@ -125,11 +125,6 @@ func (h *Handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) handleEndpoints(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 || limit > 100 {
@@ -139,7 +134,7 @@ func (h *Handlers) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	endpoints, err := h.repo.GetEndpoints(r.Context(), limit, offset)
+	endpoints, err := h.repo.GetEndpointsWithPayments(r.Context(), limit, offset)
 	if err != nil {
 		log.Printf("get endpoints error: %v", err)
 		http.Error(w, "failed to get endpoints", http.StatusInternalServerError)
@@ -148,6 +143,18 @@ func (h *Handlers) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(endpoints)
+}
+
+func (h *Handlers) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.repo.GetStats(r.Context())
+	if err != nil {
+		log.Printf("get stats error: %v", err)
+		http.Error(w, "failed to get stats", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }
 
 func (h *Handlers) handleEndpointByID(w http.ResponseWriter, r *http.Request) {

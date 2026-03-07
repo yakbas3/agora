@@ -452,3 +452,200 @@ func (r *Repository) GetEndpointByID(ctx context.Context, id uuid.UUID) (*models
 	}
 	return &e, pos, rows.Err()
 }
+
+// StatsResult holds network-wide aggregation data.
+type StatsResult struct {
+	TotalEndpoints     int                `json:"total_endpoints"`
+	TotalDomains       int                `json:"total_domains"`
+	EndpointsByNetwork []NameCount        `json:"endpoints_by_network"`
+	EndpointsByAsset   []NameCount        `json:"endpoints_by_asset"`
+	EndpointsByPrice   []NameCount        `json:"endpoints_by_price_bracket"`
+	EndpointsOverTime  []DateCount        `json:"endpoints_over_time"`
+	CrawlHistory       []models.CrawlRun  `json:"crawl_history"`
+}
+
+type NameCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type DateCount struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// GetStats returns network-wide aggregation data.
+func (r *Repository) GetStats(ctx context.Context) (*StatsResult, error) {
+	s := &StatsResult{}
+
+	// Total endpoints and domains
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*), COUNT(DISTINCT domain) FROM endpoints`,
+	).Scan(&s.TotalEndpoints, &s.TotalDomains)
+	if err != nil {
+		return nil, fmt.Errorf("stats totals: %w", err)
+	}
+
+	// Endpoints by network
+	rows, err := r.pool.Query(ctx,
+		`SELECT po.network_normalized, COUNT(DISTINCT po.endpoint_id)
+		 FROM payment_options po
+		 GROUP BY po.network_normalized
+		 ORDER BY COUNT(DISTINCT po.endpoint_id) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("stats by network: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nc NameCount
+		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, fmt.Errorf("scan network: %w", err)
+		}
+		s.EndpointsByNetwork = append(s.EndpointsByNetwork, nc)
+	}
+
+	// Endpoints by asset
+	rows2, err := r.pool.Query(ctx,
+		`SELECT po.asset_name, COUNT(DISTINCT po.endpoint_id)
+		 FROM payment_options po
+		 GROUP BY po.asset_name
+		 ORDER BY COUNT(DISTINCT po.endpoint_id) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("stats by asset: %w", err)
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var nc NameCount
+		if err := rows2.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, fmt.Errorf("scan asset: %w", err)
+		}
+		s.EndpointsByAsset = append(s.EndpointsByAsset, nc)
+	}
+
+	// Endpoints by price bracket
+	rows3, err := r.pool.Query(ctx,
+		`SELECT bracket, COUNT(*) FROM (
+			SELECT CASE
+				WHEN po.price_usd < 0.001 THEN '$0-0.001'
+				WHEN po.price_usd < 0.01 THEN '$0.001-0.01'
+				WHEN po.price_usd < 0.1 THEN '$0.01-0.1'
+				ELSE '$0.1+'
+			END AS bracket
+			FROM payment_options po
+		) sub GROUP BY bracket ORDER BY bracket`)
+	if err != nil {
+		return nil, fmt.Errorf("stats by price: %w", err)
+	}
+	defer rows3.Close()
+	for rows3.Next() {
+		var nc NameCount
+		if err := rows3.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, fmt.Errorf("scan price: %w", err)
+		}
+		s.EndpointsByPrice = append(s.EndpointsByPrice, nc)
+	}
+
+	// Endpoints over time (by first_seen date)
+	rows4, err := r.pool.Query(ctx,
+		`SELECT DATE(first_seen)::text AS d, COUNT(*)
+		 FROM endpoints
+		 GROUP BY d
+		 ORDER BY d`)
+	if err != nil {
+		return nil, fmt.Errorf("stats over time: %w", err)
+	}
+	defer rows4.Close()
+	cumulative := 0
+	for rows4.Next() {
+		var dc DateCount
+		var dailyCount int
+		if err := rows4.Scan(&dc.Date, &dailyCount); err != nil {
+			return nil, fmt.Errorf("scan date: %w", err)
+		}
+		cumulative += dailyCount
+		dc.Count = cumulative
+		s.EndpointsOverTime = append(s.EndpointsOverTime, dc)
+	}
+
+	// Crawl history (last 10)
+	rows5, err := r.pool.Query(ctx,
+		`SELECT id, started_at, completed_at, total_fetched,
+		        new_endpoints, updated_endpoints, status, error
+		 FROM crawl_runs
+		 ORDER BY started_at DESC
+		 LIMIT 10`)
+	if err != nil {
+		return nil, fmt.Errorf("stats crawl history: %w", err)
+	}
+	defer rows5.Close()
+	for rows5.Next() {
+		var cr models.CrawlRun
+		if err := rows5.Scan(&cr.ID, &cr.StartedAt, &cr.CompletedAt,
+			&cr.TotalFetched, &cr.NewEndpoints, &cr.UpdatedEndpoints,
+			&cr.Status, &cr.Error); err != nil {
+			return nil, fmt.Errorf("scan crawl run: %w", err)
+		}
+		s.CrawlHistory = append(s.CrawlHistory, cr)
+	}
+
+	return s, nil
+}
+
+// EndpointWithPayments holds an endpoint with its payment options.
+type EndpointWithPayments struct {
+	Endpoint       models.Endpoint        `json:"endpoint"`
+	PaymentOptions []models.PaymentOption  `json:"payment_options"`
+}
+
+// GetEndpointsWithPayments returns a paginated list of endpoints with payment options.
+func (r *Repository) GetEndpointsWithPayments(ctx context.Context, limit, offset int) ([]EndpointWithPayments, error) {
+	endpoints, err := r.GetEndpoints(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+
+	// Collect endpoint IDs
+	ids := make([]uuid.UUID, len(endpoints))
+	for i, e := range endpoints {
+		ids[i] = e.ID
+	}
+
+	// Batch-fetch payment options
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, endpoint_id, scheme, network_raw, network_normalized,
+		        asset_address, asset_name, max_amount_raw, price_usd,
+		        pay_to, max_timeout_seconds, mime_type, description, output_schema_raw
+		 FROM payment_options
+		 WHERE endpoint_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get payment options batch: %w", err)
+	}
+	defer rows.Close()
+
+	// Group by endpoint ID
+	poMap := make(map[uuid.UUID][]models.PaymentOption)
+	for rows.Next() {
+		var po models.PaymentOption
+		err := rows.Scan(
+			&po.ID, &po.EndpointID, &po.Scheme, &po.NetworkRaw, &po.NetworkNormalized,
+			&po.AssetAddress, &po.AssetName, &po.MaxAmountRaw, &po.PriceUSD,
+			&po.PayTo, &po.MaxTimeoutSeconds, &po.MimeType, &po.Description, &po.OutputSchemaRaw,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan payment option: %w", err)
+		}
+		poMap[po.EndpointID] = append(poMap[po.EndpointID], po)
+	}
+
+	result := make([]EndpointWithPayments, len(endpoints))
+	for i, e := range endpoints {
+		result[i] = EndpointWithPayments{
+			Endpoint:       e,
+			PaymentOptions: poMap[e.ID],
+		}
+	}
+	return result, nil
+}
