@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/yamanakbas/agora/internal/api"
 	"github.com/yamanakbas/agora/internal/config"
 	"github.com/yamanakbas/agora/internal/crawler"
 	"github.com/yamanakbas/agora/internal/database"
@@ -31,6 +32,8 @@ func main() {
 		runCrawl(cfg)
 	case "index":
 		runIndex(cfg)
+	case "serve":
+		runServe(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -45,6 +48,25 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  migrate   Run database migrations")
 	fmt.Fprintln(os.Stderr, "  crawl     Crawl the Bazaar API and populate the database")
 	fmt.Fprintln(os.Stderr, "  index     Index on-chain x402 transactions from Base")
+	fmt.Fprintln(os.Stderr, "  serve     Start the REST API server")
+}
+
+func runServe(cfg *config.Config) {
+	ctx := context.Background()
+
+	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	repo := database.NewRepository(pool)
+	srv := api.NewServer(repo, cfg.EmbedURL, cfg.APIPort)
+
+	log.Printf("Embed sidecar URL: %s", cfg.EmbedURL)
+	if err := srv.Start(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
 }
 
 func runMigrate(cfg *config.Config) {

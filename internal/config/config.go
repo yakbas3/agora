@@ -16,6 +16,8 @@ type Config struct {
 	BaseRPCURL         string `envconfig:"BASE_RPC_URL"`
 	IndexerBlockRange  int64  `envconfig:"INDEXER_BLOCK_RANGE" default:"10"`
 	IndexerStartBlock  int64  `envconfig:"INDEXER_START_BLOCK" default:"25000000"`
+	EmbedURL           string `envconfig:"EMBED_URL" default:"http://localhost:8100"`
+	APIPort            string `envconfig:"API_PORT" default:"8080"`
 }
 
 func Load() (*Config, error) {
