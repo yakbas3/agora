@@ -19,6 +19,19 @@ func NewServer(repo *database.Repository, embedURL string, port string) *Server 
 	}
 }
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/search", s.handlers.handleSearch)
@@ -26,5 +39,5 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/endpoints/{id}", s.handlers.handleEndpointByID)
 
 	log.Printf("API server starting on :%s", s.port)
-	return http.ListenAndServe(":"+s.port, mux)
+	return http.ListenAndServe(":"+s.port, corsMiddleware(mux))
 }
