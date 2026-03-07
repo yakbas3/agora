@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+*.log
+crawl.log
+node_modules
+web/node_modules
+web/.next
+data/
+docs/
+eda/
+.interface-design/
+embed/__pycache__
+tmp_*
