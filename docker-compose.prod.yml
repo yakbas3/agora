@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: agora
+      POSTGRES_PASSWORD: agora
+      POSTGRES_DB: agora
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./data/seed.sql.gz:/docker-entrypoint-initdb.d/seed.sql.gz:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agora"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  embed:
+    build:
+      context: .
+      dockerfile: Dockerfile.embed
+    ports:
+      - "8100:8100"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://agora:agora@postgres:5432/agora?sslmode=disable
+      EMBED_URL: http://embed:8100
+      API_PORT: "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embed:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  model-cache:
