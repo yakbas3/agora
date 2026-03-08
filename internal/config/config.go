@@ -8,7 +8,7 @@ import (
 
 type Config struct {
 	DatabaseURL        string `envconfig:"DATABASE_URL" required:"true"`
-	BazaarAPIURL       string `envconfig:"BAZAAR_API_URL" required:"true"`
+	BazaarAPIURL       string `envconfig:"BAZAAR_API_URL"`
 	BazaarPageSize     int    `envconfig:"BAZAAR_PAGE_SIZE" default:"100"`
 	CrawlerConcurrency int    `envconfig:"CRAWLER_CONCURRENCY" default:"3"`
 	CrawlerMaxRetries  int    `envconfig:"CRAWLER_MAX_RETRIES" default:"5"`

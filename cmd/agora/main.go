@@ -78,6 +78,10 @@ func runMigrate(cfg *config.Config) {
 }
 
 func runCrawl(cfg *config.Config) {
+	if cfg.BazaarAPIURL == "" {
+		log.Fatal("BAZAAR_API_URL is required for crawling. Set it in .env or environment.")
+	}
+
 	ctx := context.Background()
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
