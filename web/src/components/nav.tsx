@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/", label: "Endpoints" },
   { href: "/facilitators", label: "Facilitators" },
+  { href: "/transactions", label: "Transactions" },
   { href: "/network", label: "Network" },
 ];
 
@@ -27,10 +28,10 @@ export function Nav() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`text-sm relative py-4 transition-colors ${
+                className={`text-sm relative py-4 transition-colors after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:transition-colors ${
                   active
-                    ? "text-ink-primary after:absolute after:bottom-0 after:left-0 after:right-0 after:h-px after:bg-signal"
-                    : "text-ink-secondary hover:text-ink-primary"
+                    ? "text-ink-primary after:bg-signal"
+                    : "text-ink-secondary hover:text-ink-primary after:bg-transparent hover:after:bg-ink-muted"
                 }`}
               >
                 {link.label}
