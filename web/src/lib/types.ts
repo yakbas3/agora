@@ -61,3 +61,37 @@ export interface NetworkStats {
   endpointsOverTime: { date: string; count: number }[];
   crawlHistory: CrawlRun[];
 }
+
+export interface FacilitatorStats {
+  id: string;
+  name: string;
+  chain: string;
+  address: string;
+  last_synced_at: string | null;
+  tx_count: number;
+  total_volume_usd: number;
+  unique_payers: number;
+}
+
+export interface Transaction {
+  id: string;
+  tx_hash: string;
+  block_number: number;
+  block_time: string;
+  event_type: string;
+  facilitator_address: string;
+  payer_address: string;
+  recipient_address: string;
+  amount_raw: string;
+  amount_usd: number;
+  asset_address: string;
+  indexed_at: string;
+  facilitator_name: string;
+}
+
+export interface TransactionsResponse {
+  transactions: Transaction[];
+  total: number;
+  limit: number;
+  offset: number;
+}

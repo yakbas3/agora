@@ -1,3 +1,5 @@
+import { FacilitatorStats, TransactionsResponse } from "./types";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 export interface ApiPaymentOption {
@@ -93,5 +95,23 @@ export async function searchEndpoints(
 export async function fetchStats(): Promise<ApiStats> {
   const res = await fetch(`${API_URL}/api/stats`);
   if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchFacilitators(): Promise<FacilitatorStats[]> {
+  const res = await fetch(`${API_URL}/api/facilitators`);
+  if (!res.ok) throw new Error(`Failed to fetch facilitators: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTransactions(
+  limit = 50,
+  offset = 0,
+  facilitator?: string
+): Promise<TransactionsResponse> {
+  let url = `${API_URL}/api/transactions?limit=${limit}&offset=${offset}`;
+  if (facilitator) url += `&facilitator=${encodeURIComponent(facilitator)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch transactions: ${res.status}`);
   return res.json();
 }
