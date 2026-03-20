@@ -461,7 +461,10 @@ type StatsResult struct {
 	EndpointsByAsset   []NameCount        `json:"endpoints_by_asset"`
 	EndpointsByPrice   []NameCount        `json:"endpoints_by_price_bracket"`
 	EndpointsOverTime  []DateCount        `json:"endpoints_over_time"`
-	CrawlHistory       []models.CrawlRun  `json:"crawl_history"`
+	CrawlHistory         []models.CrawlRun  `json:"crawl_history"`
+	TotalTransactions    int                `json:"total_transactions"`
+	TotalVolumeUSD       float64            `json:"total_volume_usd"`
+	TransactionsOverTime []DateCount        `json:"transactions_over_time"`
 }
 
 type NameCount struct {
@@ -586,6 +589,27 @@ func (r *Repository) GetStats(ctx context.Context) (*StatsResult, error) {
 			return nil, fmt.Errorf("scan crawl run: %w", err)
 		}
 		s.CrawlHistory = append(s.CrawlHistory, cr)
+	}
+
+	// Transaction totals
+	r.pool.QueryRow(ctx,
+		`SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(amount_usd), 0) FROM transactions`,
+	).Scan(&s.TotalTransactions, &s.TotalVolumeUSD)
+
+	// Transactions over time (daily, last 30 days)
+	rows6, err := r.pool.Query(ctx,
+		`SELECT DATE(block_time)::text AS d, COUNT(*)
+		 FROM transactions
+		 WHERE block_time >= NOW() - INTERVAL '30 days'
+		 GROUP BY d ORDER BY d`)
+	if err == nil {
+		defer rows6.Close()
+		for rows6.Next() {
+			var dc DateCount
+			if err := rows6.Scan(&dc.Date, &dc.Count); err == nil {
+				s.TransactionsOverTime = append(s.TransactionsOverTime, dc)
+			}
+		}
 	}
 
 	return s, nil
