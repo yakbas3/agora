@@ -157,6 +157,45 @@ func (h *Handlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func (h *Handlers) handleFacilitators(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.repo.GetFacilitatorStats(r.Context())
+	if err != nil {
+		log.Printf("get facilitator stats error: %v", err)
+		http.Error(w, "failed to get facilitator stats", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (h *Handlers) handleTransactions(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	facilitator := r.URL.Query().Get("facilitator")
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	txs, total, err := h.repo.GetTransactions(r.Context(), limit, offset, facilitator)
+	if err != nil {
+		log.Printf("get transactions error: %v", err)
+		http.Error(w, "failed to get transactions", http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]any{
+		"transactions": txs,
+		"total":        total,
+		"limit":        limit,
+		"offset":       offset,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (h *Handlers) handleEndpointByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

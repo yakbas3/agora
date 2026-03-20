@@ -38,6 +38,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/endpoints", s.handlers.handleEndpoints)
 	mux.HandleFunc("GET /api/endpoints/{id}", s.handlers.handleEndpointByID)
 	mux.HandleFunc("GET /api/stats", s.handlers.handleStats)
+	mux.HandleFunc("GET /api/facilitators", s.handlers.handleFacilitators)
+	mux.HandleFunc("GET /api/transactions", s.handlers.handleTransactions)
 
 	log.Printf("API server starting on :%s", s.port)
 	return http.ListenAndServe(":"+s.port, corsMiddleware(mux))

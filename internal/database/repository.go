@@ -672,6 +672,111 @@ func (r *Repository) GetBaseFacilitators(ctx context.Context) ([]models.Facilita
 	return out, rows.Err()
 }
 
+// FacilitatorStats holds a facilitator with aggregated transaction stats.
+type FacilitatorStats struct {
+	models.Facilitator
+	TxCount      int     `json:"tx_count"`
+	TotalVolume  float64 `json:"total_volume_usd"`
+	UniquePayers int     `json:"unique_payers"`
+}
+
+// GetFacilitatorStats returns all facilitators with their transaction stats.
+func (r *Repository) GetFacilitatorStats(ctx context.Context) ([]FacilitatorStats, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT f.id, f.name, f.chain, f.address, f.last_synced_at, f.created_at,
+		       COALESCE(s.tx_count, 0),
+		       COALESCE(s.total_volume, 0),
+		       COALESCE(s.unique_payers, 0)
+		FROM facilitators f
+		LEFT JOIN (
+			SELECT facilitator_address,
+			       COUNT(*)::int AS tx_count,
+			       SUM(amount_usd) AS total_volume,
+			       COUNT(DISTINCT payer_address)::int AS unique_payers
+			FROM transactions
+			GROUP BY facilitator_address
+		) s ON lower(f.address) = lower(s.facilitator_address)
+		WHERE f.chain = 'base'
+		ORDER BY COALESCE(s.tx_count, 0) DESC, f.name`)
+	if err != nil {
+		return nil, fmt.Errorf("get facilitator stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []FacilitatorStats
+	for rows.Next() {
+		var fs FacilitatorStats
+		if err := rows.Scan(&fs.ID, &fs.Name, &fs.Chain, &fs.Address,
+			&fs.LastSyncedAt, &fs.CreatedAt,
+			&fs.TxCount, &fs.TotalVolume, &fs.UniquePayers); err != nil {
+			return nil, fmt.Errorf("scan facilitator stats: %w", err)
+		}
+		out = append(out, fs)
+	}
+	return out, rows.Err()
+}
+
+// TransactionWithFacilitator holds a transaction with its facilitator name.
+type TransactionWithFacilitator struct {
+	models.Transaction
+	FacilitatorName string `json:"facilitator_name"`
+}
+
+// GetTransactions returns a paginated list of transactions with facilitator names.
+func (r *Repository) GetTransactions(ctx context.Context, limit, offset int, facilitatorFilter string) ([]TransactionWithFacilitator, int, error) {
+	// Count total
+	countQuery := `SELECT COUNT(*) FROM transactions t`
+	countArgs := []any{}
+	if facilitatorFilter != "" {
+		countQuery += ` JOIN facilitators f ON lower(t.facilitator_address) = lower(f.address) AND f.chain = 'base' WHERE lower(f.name) = lower($1)`
+		countArgs = append(countArgs, facilitatorFilter)
+	}
+	var total int
+	if err := r.pool.QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count transactions: %w", err)
+	}
+
+	// Fetch page
+	query := `
+		SELECT t.id, t.tx_hash, t.block_number, t.block_time, t.event_type,
+		       t.proxy_contract, t.facilitator_address, t.payer_address,
+		       t.recipient_address, t.amount_raw, t.amount_usd, t.asset_address,
+		       t.indexed_at, COALESCE(f.name, 'Unknown')
+		FROM transactions t
+		LEFT JOIN facilitators f ON lower(t.facilitator_address) = lower(f.address) AND f.chain = 'base'`
+	args := []any{}
+	argIdx := 1
+
+	if facilitatorFilter != "" {
+		query += fmt.Sprintf(` WHERE lower(f.name) = lower($%d)`, argIdx)
+		args = append(args, facilitatorFilter)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(` ORDER BY t.block_time DESC LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get transactions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TransactionWithFacilitator
+	for rows.Next() {
+		var tw TransactionWithFacilitator
+		if err := rows.Scan(&tw.ID, &tw.TxHash, &tw.BlockNumber, &tw.BlockTime,
+			&tw.EventType, &tw.ProxyContract, &tw.FacilitatorAddress,
+			&tw.PayerAddress, &tw.RecipientAddress, &tw.AmountRaw,
+			&tw.AmountUSD, &tw.AssetAddress, &tw.IndexedAt,
+			&tw.FacilitatorName); err != nil {
+			return nil, 0, fmt.Errorf("scan transaction: %w", err)
+		}
+		out = append(out, tw)
+	}
+	return out, total, rows.Err()
+}
+
 // UpdateFacilitatorSyncTime sets last_synced_at for a facilitator.
 func (r *Repository) UpdateFacilitatorSyncTime(ctx context.Context, id uuid.UUID, syncedAt time.Time) error {
 	_, err := r.pool.Exec(ctx,
