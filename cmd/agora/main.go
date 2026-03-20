@@ -8,10 +8,12 @@ import (
 	"os"
 
 	"github.com/yamanakbas/agora/internal/api"
+	"github.com/yamanakbas/agora/internal/cdp"
 	"github.com/yamanakbas/agora/internal/config"
 	"github.com/yamanakbas/agora/internal/crawler"
 	"github.com/yamanakbas/agora/internal/database"
 	"github.com/yamanakbas/agora/internal/indexer"
+	"github.com/yamanakbas/agora/internal/sync"
 )
 
 func main() {
@@ -32,6 +34,8 @@ func main() {
 		runCrawl(cfg)
 	case "index":
 		runIndex(cfg)
+	case "sync":
+		runSync(cfg)
 	case "serve":
 		runServe(cfg)
 	default:
@@ -48,6 +52,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  migrate   Run database migrations")
 	fmt.Fprintln(os.Stderr, "  crawl     Crawl the Bazaar API and populate the database")
 	fmt.Fprintln(os.Stderr, "  index     Index on-chain x402 transactions from Base")
+	fmt.Fprintln(os.Stderr, "  sync      Sync V1 transactions from CDP SQL API")
 	fmt.Fprintln(os.Stderr, "  serve     Start the REST API server")
 }
 
@@ -131,4 +136,32 @@ func runIndex(cfg *config.Config) {
 	if err := runner.Run(ctx); err != nil {
 		log.Fatalf("Indexing failed: %v", err)
 	}
+}
+
+func runSync(cfg *config.Config) {
+	if cfg.CDPAPIKeyID == "" || cfg.CDPAPIKeySecret == "" {
+		log.Fatal("CDP_API_KEY_ID and CDP_API_KEY_SECRET are required for syncing. Set them in .env or environment.")
+	}
+
+	ctx := context.Background()
+
+	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	cdpClient, err := cdp.NewClient(cfg.CDPAPIKeyID, cfg.CDPAPIKeySecret)
+	if err != nil {
+		log.Fatalf("Failed to create CDP client: %v", err)
+	}
+
+	repo := database.NewRepository(pool)
+	runner := sync.NewRunner(cdpClient, repo)
+
+	log.Println("Starting V1 transaction sync...")
+	if err := runner.Run(ctx); err != nil {
+		log.Fatalf("Sync failed: %v", err)
+	}
+	log.Println("Done.")
 }
