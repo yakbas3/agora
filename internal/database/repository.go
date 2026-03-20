@@ -649,3 +649,36 @@ func (r *Repository) GetEndpointsWithPayments(ctx context.Context, limit, offset
 	}
 	return result, nil
 }
+
+// GetBaseFacilitators returns all facilitators on the Base chain.
+func (r *Repository) GetBaseFacilitators(ctx context.Context) ([]models.Facilitator, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, name, chain, address, last_synced_at, created_at
+		 FROM facilitators WHERE chain = 'base'
+		 ORDER BY name, address`)
+	if err != nil {
+		return nil, fmt.Errorf("get base facilitators: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Facilitator
+	for rows.Next() {
+		var f models.Facilitator
+		if err := rows.Scan(&f.ID, &f.Name, &f.Chain, &f.Address, &f.LastSyncedAt, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan facilitator: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// UpdateFacilitatorSyncTime sets last_synced_at for a facilitator.
+func (r *Repository) UpdateFacilitatorSyncTime(ctx context.Context, id uuid.UUID, syncedAt time.Time) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE facilitators SET last_synced_at = $2 WHERE id = $1`,
+		id, syncedAt)
+	if err != nil {
+		return fmt.Errorf("update facilitator sync time: %w", err)
+	}
+	return nil
+}
