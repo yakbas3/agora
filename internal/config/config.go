@@ -18,6 +18,8 @@ type Config struct {
 	IndexerStartBlock  int64  `envconfig:"INDEXER_START_BLOCK" default:"25000000"`
 	EmbedURL           string `envconfig:"EMBED_URL" default:"http://localhost:8100"`
 	APIPort            string `envconfig:"API_PORT" default:"8080"`
+	CDPAPIKeyID        string `envconfig:"CDP_API_KEY_ID"`
+	CDPAPIKeySecret    string `envconfig:"CDP_API_KEY_SECRET"`
 }
 
 func Load() (*Config, error) {
