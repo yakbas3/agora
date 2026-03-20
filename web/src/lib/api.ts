@@ -65,6 +65,9 @@ export interface ApiStats {
     updated_endpoints: number;
     status: string;
   }[];
+  total_transactions: number;
+  total_volume_usd: number;
+  transactions_over_time: { date: string; count: number }[];
 }
 
 export async function fetchEndpoints(
