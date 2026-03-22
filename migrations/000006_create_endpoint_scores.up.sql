@@ -9,7 +9,7 @@ WITH raw AS (
         MIN(t.block_time) AS first_tx_at
     FROM endpoints e
     LEFT JOIN payment_options po ON po.endpoint_id = e.id
-    LEFT JOIN transactions t ON t.recipient_address = po.pay_to
+    LEFT JOIN transactions t ON lower(t.recipient_address) = lower(po.pay_to)
     GROUP BY e.id
 ),
 maxes AS (
