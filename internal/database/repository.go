@@ -332,8 +332,10 @@ func buildSearchQuery(filters SearchFilters, limit int) (string, []any) {
 			e.id, e.resource_url, e.domain, e.type, e.x402_version,
 			e.description, e.http_method, e.input_schema, e.output_schema,
 			e.raw_metadata, e.last_updated, e.first_seen, e.last_crawled,
-			1 - (e.embedding <=> $1) AS similarity
+			1 - (e.embedding <=> $1) AS similarity,
+			COALESCE(es.reliability_score, 0) AS reliability_score
 		FROM endpoints e
+		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
 		%s
 		%s
 		ORDER BY e.id, similarity DESC
@@ -365,7 +367,7 @@ func (r *Repository) SearchByVector(ctx context.Context, vector pgvector.Vector,
 			&sr.Endpoint.Type, &sr.Endpoint.X402Version, &sr.Endpoint.Description,
 			&sr.Endpoint.HTTPMethod, &sr.Endpoint.InputSchema, &sr.Endpoint.OutputSchema,
 			&sr.Endpoint.RawMetadata, &sr.Endpoint.LastUpdated, &sr.Endpoint.FirstSeen,
-			&sr.Endpoint.LastCrawled, &sr.Similarity,
+			&sr.Endpoint.LastCrawled, &sr.Similarity, &sr.Endpoint.ReliabilityScore,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
@@ -378,11 +380,13 @@ func (r *Repository) SearchByVector(ctx context.Context, vector pgvector.Vector,
 // GetEndpoints returns a paginated list of endpoints.
 func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]models.Endpoint, error) {
 	q := `
-		SELECT id, resource_url, domain, type, x402_version, description,
-		       http_method, input_schema, output_schema, raw_metadata,
-		       last_updated, first_seen, last_crawled
-		FROM endpoints
-		ORDER BY last_crawled DESC
+		SELECT e.id, e.resource_url, e.domain, e.type, e.x402_version, e.description,
+		       e.http_method, e.input_schema, e.output_schema, e.raw_metadata,
+		       e.last_updated, e.first_seen, e.last_crawled,
+		       COALESCE(es.reliability_score, 0)
+		FROM endpoints e
+		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
+		ORDER BY e.last_crawled DESC
 		LIMIT $1 OFFSET $2
 	`
 	rows, err := r.pool.Query(ctx, q, limit, offset)
@@ -398,6 +402,7 @@ func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]mod
 			&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
 			&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
 			&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
+			&e.ReliabilityScore,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan endpoint: %w", err)
@@ -410,16 +415,20 @@ func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]mod
 // GetEndpointByID returns a single endpoint with its payment options.
 func (r *Repository) GetEndpointByID(ctx context.Context, id uuid.UUID) (*models.Endpoint, []models.PaymentOption, error) {
 	eq := `
-		SELECT id, resource_url, domain, type, x402_version, description,
-		       http_method, input_schema, output_schema, raw_metadata,
-		       last_updated, first_seen, last_crawled
-		FROM endpoints WHERE id = $1
+		SELECT e.id, e.resource_url, e.domain, e.type, e.x402_version, e.description,
+		       e.http_method, e.input_schema, e.output_schema, e.raw_metadata,
+		       e.last_updated, e.first_seen, e.last_crawled,
+		       COALESCE(es.reliability_score, 0)
+		FROM endpoints e
+		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
+		WHERE e.id = $1
 	`
 	var e models.Endpoint
 	err := r.pool.QueryRow(ctx, eq, id).Scan(
 		&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
 		&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
 		&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
+		&e.ReliabilityScore,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get endpoint: %w", err)
@@ -465,6 +474,7 @@ type StatsResult struct {
 	TotalTransactions    int                `json:"total_transactions"`
 	TotalVolumeUSD       float64            `json:"total_volume_usd"`
 	TransactionsOverTime []DateCount        `json:"transactions_over_time"`
+	AvgReliability       float64            `json:"avg_reliability"`
 }
 
 type NameCount struct {
@@ -595,6 +605,11 @@ func (r *Repository) GetStats(ctx context.Context) (*StatsResult, error) {
 	r.pool.QueryRow(ctx,
 		`SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(amount_usd), 0) FROM transactions`,
 	).Scan(&s.TotalTransactions, &s.TotalVolumeUSD)
+
+	// Average reliability score
+	r.pool.QueryRow(ctx,
+		`SELECT COALESCE(AVG(reliability_score), 0) FROM endpoint_scores WHERE reliability_score > 0`,
+	).Scan(&s.AvgReliability)
 
 	// Transactions over time (daily, last 30 days)
 	rows6, err := r.pool.Query(ctx,

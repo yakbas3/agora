@@ -22,5 +22,6 @@ type Endpoint struct {
 	LastUpdated  time.Time       `db:"last_updated" json:"last_updated"`
 	FirstSeen    time.Time       `db:"first_seen" json:"first_seen"`
 	LastCrawled  time.Time       `db:"last_crawled" json:"last_crawled"`
-	Embedding    pgvector.Vector `db:"embedding" json:"-"`
+	Embedding        pgvector.Vector `db:"embedding" json:"-"`
+	ReliabilityScore float64         `db:"reliability_score" json:"reliability_score"`
 }
