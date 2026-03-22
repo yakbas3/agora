@@ -4,6 +4,7 @@
 
 # Environment
 .env
+cdp_api_key.json
 
 # IDE
 .idea/
@@ -20,3 +21,16 @@ Thumbs.db
 web/node_modules/
 web/.next/
 web/out/
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Temporary files
+tmp_*

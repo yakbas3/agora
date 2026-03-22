@@ -4,7 +4,7 @@ import "time"
 
 // Transfer represents a single USDC transfer from the CDP SQL API.
 type Transfer struct {
-	ContractAddress string    `json:"contract_address"`
+	ContractAddress string    `json:"address"`
 	Sender          string    `json:"sender"`
 	TransactionFrom string    `json:"transaction_from"`
 	ToAddress       string    `json:"to_address"`
@@ -17,16 +17,12 @@ type Transfer struct {
 
 // QueryResponse is the CDP SQL API response envelope.
 type QueryResponse struct {
-	Result QueryResult `json:"result"`
+	Metadata QueryMetadata            `json:"metadata"`
+	Result   []map[string]interface{} `json:"result"`
 }
 
-type QueryResult struct {
-	Columns []Column        `json:"columns"`
-	Rows    [][]interface{} `json:"rows"`
-	Status  string          `json:"status"`
-}
-
-type Column struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+type QueryMetadata struct {
+	RowCount       int    `json:"rowCount"`
+	ExecutionTimeMs int   `json:"executionTimeMs"`
+	Cached         bool   `json:"cached"`
 }

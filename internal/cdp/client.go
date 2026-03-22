@@ -1,14 +1,17 @@
 package cdp
 
 import (
-	"crypto/ecdsa"
-	"crypto/x509"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
+	"math"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,24 +20,28 @@ import (
 
 const (
 	cdpAPIURL       = "https://api.cdp.coinbase.com/platform/v2/data/query/run"
-	usdcBaseAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+	usdcBaseAddress = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" // lowercase
 	queryLimit      = 10000
 )
 
 type Client struct {
 	keyID      string
-	privateKey *ecdsa.PrivateKey
+	privateKey ed25519.PrivateKey
 	httpClient *http.Client
 }
 
 func NewClient(keyID, keySecret string) (*Client, error) {
-	privKey, err := parseES256Key(keySecret)
+	keySecret = strings.TrimSpace(keySecret)
+	derBytes, err := base64.StdEncoding.DecodeString(keySecret)
 	if err != nil {
-		return nil, fmt.Errorf("parse CDP key: %w", err)
+		return nil, fmt.Errorf("base64 decode CDP key: %w", err)
+	}
+	if len(derBytes) != 64 {
+		return nil, fmt.Errorf("unexpected CDP key length: %d bytes (expected 64)", len(derBytes))
 	}
 	return &Client{
 		keyID:      keyID,
-		privateKey: privKey,
+		privateKey: ed25519.PrivateKey(derBytes),
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}, nil
 }
@@ -46,16 +53,12 @@ func (c *Client) QueryTransfers(facilitatorAddr string, since, until time.Time) 
 
 	for {
 		sql := buildTransferQuery(facilitatorAddr, since, until, queryLimit, offset)
-		rows, err := c.executeQuery(sql)
+		result, err := c.executeQuery(sql)
 		if err != nil {
 			return nil, err
 		}
 
-		transfers, err := parseTransferRows(rows)
-		if err != nil {
-			return nil, err
-		}
-
+		transfers := parseTransferRows(result)
 		all = append(all, transfers...)
 
 		if len(transfers) < queryLimit {
@@ -68,8 +71,9 @@ func (c *Client) QueryTransfers(facilitatorAddr string, since, until time.Time) 
 }
 
 func buildTransferQuery(facilitator string, since, until time.Time, limit, offset int) string {
+	// CDP SQL API stores all addresses in lowercase
 	return fmt.Sprintf(`SELECT
-  address AS contract_address,
+  address,
   parameters['from']::String AS sender,
   transaction_from,
   parameters['to']::String AS to_address,
@@ -88,7 +92,7 @@ ORDER BY block_timestamp DESC
 LIMIT %d
 OFFSET %d`,
 		usdcBaseAddress,
-		facilitator,
+		strings.ToLower(facilitator),
 		since.UTC().Format("2006-01-02 15:04:05"),
 		until.UTC().Format("2006-01-02 15:04:05"),
 		limit,
@@ -102,137 +106,118 @@ func (c *Client) generateJWT() (string, error) {
 		"sub": c.keyID,
 		"iss": "cdp",
 		"aud": []string{"cdp_service"},
+		"nbf": now.Unix(),
 		"iat": now.Unix(),
-		"exp": now.Add(120 * time.Second).Unix(),
+		"exp": now.Add(60 * time.Second).Unix(),
+		"uri": "POST api.cdp.coinbase.com/platform/v2/data/query/run",
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+
+	token.Header["kid"] = c.keyID
+	nonceBig, _ := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
+	token.Header["nonce"] = nonceBig.String()
+
 	return token.SignedString(c.privateKey)
 }
 
-func (c *Client) executeQuery(sql string) (*QueryResult, error) {
-	jwtToken, err := c.generateJWT()
-	if err != nil {
-		return nil, fmt.Errorf("generate JWT: %w", err)
+func (c *Client) executeQuery(sql string) ([]map[string]interface{}, error) {
+	const maxRetries = 5
+	backoff := 3 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		jwtToken, err := c.generateJWT()
+		if err != nil {
+			return nil, fmt.Errorf("generate JWT: %w", err)
+		}
+
+		body := fmt.Sprintf(`{"sql": %s}`, jsonString(sql))
+		req, err := http.NewRequest("POST", cdpAPIURL, strings.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("CDP API request: %w", err)
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+
+		if resp.StatusCode == 429 && attempt < maxRetries {
+			log.Printf("      CDP 429 rate limited, retrying in %s (attempt %d/%d)", backoff, attempt+1, maxRetries)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("CDP API error %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var qr QueryResponse
+		if err := json.Unmarshal(respBody, &qr); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+		return qr.Result, nil
 	}
 
-	body := fmt.Sprintf(`{"sql": %s}`, jsonString(sql))
-	req, err := http.NewRequest("POST", cdpAPIURL, strings.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+jwtToken)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("CDP API request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("CDP API error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var qr QueryResponse
-	if err := json.Unmarshal(respBody, &qr); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return &qr.Result, nil
+	return nil, fmt.Errorf("CDP API: max retries exceeded (429 rate limit)")
 }
 
-func parseTransferRows(result *QueryResult) ([]Transfer, error) {
-	if result == nil || len(result.Rows) == 0 {
-		return nil, nil
+func parseTransferRows(rows []map[string]interface{}) []Transfer {
+	if len(rows) == 0 {
+		return nil
 	}
 
 	var transfers []Transfer
-	for _, row := range result.Rows {
-		if len(row) < 9 {
-			continue
-		}
+	for _, row := range rows {
 		t := Transfer{
-			ContractAddress: toString(row[0]),
-			Sender:          toString(row[1]),
-			TransactionFrom: toString(row[2]),
-			ToAddress:       toString(row[3]),
-			TransactionHash: toString(row[4]),
-			Amount:          toString(row[6]),
+			ContractAddress: toString(row["address"]),
+			Sender:          toString(row["sender"]),
+			TransactionFrom: toString(row["transaction_from"]),
+			ToAddress:       toString(row["to_address"]),
+			TransactionHash: toString(row["transaction_hash"]),
+			Amount:          toString(row["amount"]),
 		}
 
 		// Parse block_timestamp
-		if ts, ok := row[5].(string); ok {
-			parsed, err := time.Parse("2006-01-02T15:04:05", ts)
-			if err != nil {
-				parsed, err = time.Parse("2006-01-02 15:04:05", ts)
-			}
-			if err == nil {
-				t.BlockTimestamp = parsed
+		if ts := toString(row["block_timestamp"]); ts != "" {
+			for _, layout := range []string{
+				"2006-01-02T15:04:05.000Z",
+				"2006-01-02T15:04:05Z",
+				"2006-01-02T15:04:05",
+				"2006-01-02 15:04:05",
+			} {
+				if parsed, err := time.Parse(layout, ts); err == nil {
+					t.BlockTimestamp = parsed
+					break
+				}
 			}
 		}
 
 		// Parse log_index
-		if v, ok := row[7].(float64); ok {
+		if v, ok := row["log_index"].(float64); ok {
 			t.LogIndex = int(v)
+		} else if s, ok := row["log_index"].(string); ok {
+			t.LogIndex, _ = strconv.Atoi(s)
 		}
 
 		// Parse block_number
-		if v, ok := row[8].(float64); ok {
+		if v, ok := row["block_number"].(float64); ok {
 			t.BlockNumber = int64(v)
+		} else if s, ok := row["block_number"].(string); ok {
+			t.BlockNumber, _ = strconv.ParseInt(s, 10, 64)
 		}
 
 		transfers = append(transfers, t)
 	}
-	return transfers, nil
-}
-
-// parseES256Key parses a base64 or PEM-encoded ES256 private key.
-func parseES256Key(secret string) (*ecdsa.PrivateKey, error) {
-	// Try PEM first
-	if strings.Contains(secret, "-----BEGIN") {
-		block, _ := pem.Decode([]byte(secret))
-		if block == nil {
-			return nil, fmt.Errorf("failed to decode PEM block")
-		}
-		key, err := x509.ParseECPrivateKey(block.Bytes)
-		if err != nil {
-			// Try PKCS8
-			pk, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
-			if err2 != nil {
-				return nil, fmt.Errorf("parse EC key: %w; PKCS8: %w", err, err2)
-			}
-			ecKey, ok := pk.(*ecdsa.PrivateKey)
-			if !ok {
-				return nil, fmt.Errorf("PKCS8 key is not ECDSA")
-			}
-			return ecKey, nil
-		}
-		return key, nil
-	}
-
-	// Try raw base64 (Coinbase gives base64-encoded DER)
-	derBytes, err := base64.StdEncoding.DecodeString(secret)
-	if err != nil {
-		return nil, fmt.Errorf("base64 decode: %w", err)
-	}
-
-	key, err := x509.ParseECPrivateKey(derBytes)
-	if err != nil {
-		pk, err2 := x509.ParsePKCS8PrivateKey(derBytes)
-		if err2 != nil {
-			return nil, fmt.Errorf("parse EC key from base64: %w; PKCS8: %w", err, err2)
-		}
-		ecKey, ok := pk.(*ecdsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("PKCS8 key is not ECDSA")
-		}
-		return ecKey, nil
-	}
-	return key, nil
+	return transfers
 }
 
 // jsonString marshals a string to a JSON string (handles escaping).
@@ -242,6 +227,9 @@ func jsonString(s string) string {
 }
 
 func toString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
 	if s, ok := v.(string); ok {
 		return s
 	}

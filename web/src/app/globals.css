@@ -40,4 +40,23 @@
     color: var(--color-ink-primary);
     font-family: var(--font-sans);
   }
+
+  ::selection {
+    background-color: hsla(168, 80%, 50%, 0.2);
+    color: var(--color-ink-primary);
+  }
+
+  *:focus-visible {
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes signal-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@utility animate-signal-pulse {
+  animation: signal-pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }

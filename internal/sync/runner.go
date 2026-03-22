@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,7 +42,17 @@ func (r *Runner) Run(ctx context.Context) error {
 	now := time.Now().UTC()
 	totalInserted := 0
 
-	for _, f := range facilitators {
+	// Skip facilitators synced in the last hour
+	skipped := 0
+	for i, f := range facilitators {
+		if f.LastSyncedAt != nil && now.Sub(*f.LastSyncedAt) < time.Hour {
+			skipped++
+			continue
+		}
+		if i > 0 {
+			time.Sleep(2 * time.Second) // Rate limit: ~1 req per 2s
+		}
+		log.Printf("[%d/%d] Syncing %s (%s)...", i+1, len(facilitators), f.Name, f.Address[:10]+"...")
 		inserted, err := r.syncFacilitator(ctx, f, now)
 		if err != nil {
 			log.Printf("ERROR syncing %s (%s): %v", f.Name, f.Address, err)
@@ -51,6 +62,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		if inserted > 0 {
 			log.Printf("  %s (%s): %d new transactions", f.Name, f.Address[:10]+"...", inserted)
 		}
+	}
+	if skipped > 0 {
+		log.Printf("Skipped %d recently-synced facilitators", skipped)
 	}
 
 	log.Printf("Sync complete: %d new transactions total", totalInserted)
@@ -72,21 +86,73 @@ func (r *Runner) Run(ctx context.Context) error {
 
 func (r *Runner) syncFacilitator(ctx context.Context, f models.Facilitator, now time.Time) (int, error) {
 	since := defaultSinceTime(f.LastSyncedAt)
+	totalInserted := 0
 
-	transfers, err := r.cdpClient.QueryTransfers(f.Address, since, now)
-	if err != nil {
-		return 0, fmt.Errorf("query transfers: %w", err)
+	// Query in monthly chunks to avoid CDP scan limits
+	chunkStart := since
+	for chunkStart.Before(now) {
+		chunkEnd := chunkStart.AddDate(0, 1, 0) // +1 month
+		if chunkEnd.After(now) {
+			chunkEnd = now
+		}
+
+		log.Printf("    chunk %s → %s", chunkStart.Format("2006-01-02"), chunkEnd.Format("2006-01-02"))
+		transfers, err := r.cdpClient.QueryTransfers(f.Address, chunkStart, chunkEnd)
+		if err != nil {
+			// If scan limit exceeded, try weekly chunks
+			if strings.Contains(err.Error(), "Limit for rows or bytes") {
+				weekInserted, weekErr := r.syncFacilitatorWeekly(ctx, f, chunkStart, chunkEnd, now)
+				if weekErr != nil {
+					return totalInserted, weekErr
+				}
+				totalInserted += weekInserted
+				chunkStart = chunkEnd
+				continue
+			}
+			return totalInserted, fmt.Errorf("query transfers: %w", err)
+		}
+
+		inserted, err := r.insertTransfers(ctx, f, transfers, now)
+		if err != nil {
+			return totalInserted, err
+		}
+		totalInserted += inserted
+		chunkStart = chunkEnd
 	}
 
-	if len(transfers) == 0 {
-		// Update sync time even if no transfers, so we don't re-query the same window
-		if err := r.repo.UpdateFacilitatorSyncTime(ctx, f.ID, now); err != nil {
-			return 0, fmt.Errorf("update sync time: %w", err)
+	if err := r.repo.UpdateFacilitatorSyncTime(ctx, f.ID, now); err != nil {
+		return totalInserted, fmt.Errorf("update sync time: %w", err)
+	}
+	return totalInserted, nil
+}
+
+func (r *Runner) syncFacilitatorWeekly(ctx context.Context, f models.Facilitator, start, end, now time.Time) (int, error) {
+	totalInserted := 0
+	chunkStart := start
+	for chunkStart.Before(end) {
+		chunkEnd := chunkStart.AddDate(0, 0, 7) // +1 week
+		if chunkEnd.After(end) {
+			chunkEnd = end
 		}
+		transfers, err := r.cdpClient.QueryTransfers(f.Address, chunkStart, chunkEnd)
+		if err != nil {
+			return totalInserted, fmt.Errorf("weekly query transfers: %w", err)
+		}
+		inserted, err := r.insertTransfers(ctx, f, transfers, now)
+		if err != nil {
+			return totalInserted, err
+		}
+		totalInserted += inserted
+		chunkStart = chunkEnd
+	}
+	return totalInserted, nil
+}
+
+func (r *Runner) insertTransfers(ctx context.Context, f models.Facilitator, transfers []cdp.Transfer, now time.Time) (int, error) {
+	if len(transfers) == 0 {
 		return 0, nil
 	}
 
-	// Convert CDP transfers to model transactions
 	txs := make([]models.Transaction, 0, len(transfers))
 	for _, t := range transfers {
 		txs = append(txs, models.Transaction{

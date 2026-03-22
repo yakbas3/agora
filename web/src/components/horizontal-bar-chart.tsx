@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, LabelList } from "recharts";
 
 interface HorizontalBarChartProps {
   data: { name: string; value: number }[];
@@ -13,12 +13,12 @@ export function HorizontalBarChart({ data, title, color = "hsl(168, 80%, 50%)" }
     <div className="border border-border-soft rounded-md p-4">
       <h3 className="text-sm font-medium text-ink-secondary mb-4">{title}</h3>
       <ResponsiveContainer width="100%" height={data.length * 32 + 16}>
-        <BarChart data={data} layout="vertical" margin={{ left: 0, right: 16, top: 0, bottom: 0 }}>
+        <BarChart data={data} layout="vertical" margin={{ left: 0, right: 48, top: 0, bottom: 0 }}>
           <XAxis type="number" hide />
           <YAxis
             type="category"
             dataKey="name"
-            width={100}
+            width={80}
             tick={{ fill: "hsl(220, 12%, 62%)", fontSize: 12, fontFamily: "var(--font-mono)" }}
             axisLine={false}
             tickLine={false}
@@ -27,6 +27,16 @@ export function HorizontalBarChart({ data, title, color = "hsl(168, 80%, 50%)" }
             {data.map((_, i) => (
               <Cell key={i} fill={color} fillOpacity={0.8} />
             ))}
+            <LabelList
+              dataKey="value"
+              position="right"
+              formatter={(v) => Number(v).toLocaleString()}
+              style={{
+                fill: "hsl(220, 10%, 42%)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+              }}
+            />
           </Bar>
         </BarChart>
       </ResponsiveContainer>
