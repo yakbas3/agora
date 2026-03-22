@@ -25,7 +25,7 @@ function transformPaymentOption(po: ApiPaymentOption): PaymentOption {
 }
 
 function transformEndpoint(
-  api: { id: string; resource_url: string; domain: string; type: string; x402_version: number; description: string; http_method: string; input_schema: Record<string, unknown> | null; output_schema: Record<string, unknown> | null; last_updated: string; first_seen: string; last_crawled: string },
+  api: { id: string; resource_url: string; domain: string; type: string; x402_version: number; description: string; http_method: string; input_schema: Record<string, unknown> | null; output_schema: Record<string, unknown> | null; last_updated: string; first_seen: string; last_crawled: string; reliability_score?: number },
   paymentOptions: PaymentOption[]
 ): Endpoint {
   return {
@@ -41,6 +41,7 @@ function transformEndpoint(
     lastUpdated: api.last_updated,
     firstSeen: api.first_seen,
     lastCrawled: api.last_crawled,
+    reliabilityScore: api.reliability_score,
     paymentOptions,
   };
 }
@@ -73,5 +74,6 @@ export function transformStats(api: ApiStats): NetworkStats {
       updatedEndpoints: cr.updated_endpoints,
       status: cr.status,
     })),
+    avgReliability: api.avg_reliability ?? 0,
   };
 }

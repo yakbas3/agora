@@ -31,6 +31,7 @@ export interface ApiEndpoint {
   last_updated: string;
   first_seen: string;
   last_crawled: string;
+  reliability_score?: number;
 }
 
 export interface ApiEndpointWithPayments {
@@ -68,6 +69,7 @@ export interface ApiStats {
   total_transactions: number;
   total_volume_usd: number;
   transactions_over_time: { date: string; count: number }[];
+  avg_reliability: number;
 }
 
 export async function fetchEndpoints(

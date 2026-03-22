@@ -60,6 +60,7 @@ export interface NetworkStats {
   endpointsByPriceBracket: { name: string; count: number }[];
   endpointsOverTime: { date: string; count: number }[];
   crawlHistory: CrawlRun[];
+  avgReliability: number;
 }
 
 export interface FacilitatorStats {

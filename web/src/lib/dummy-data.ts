@@ -956,4 +956,5 @@ export const networkStats: NetworkStats = {
   endpointsOverTime: generateEndpointsOverTime(),
 
   crawlHistory,
+  avgReliability: 0.87,
 };
