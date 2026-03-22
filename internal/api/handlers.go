@@ -54,7 +54,8 @@ type EndpointJSON struct {
 	Description  string          `json:"description"`
 	HTTPMethod   string          `json:"http_method"`
 	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	OutputSchema     json.RawMessage `json:"output_schema,omitempty"`
+	ReliabilityScore float64         `json:"reliability_score"`
 }
 
 func (h *Handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,8 @@ func (h *Handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 				Description:  sr.Endpoint.Description,
 				HTTPMethod:   sr.Endpoint.HTTPMethod,
 				InputSchema:  sr.Endpoint.InputSchema,
-				OutputSchema: sr.Endpoint.OutputSchema,
+				OutputSchema:     sr.Endpoint.OutputSchema,
+			ReliabilityScore: sr.Endpoint.ReliabilityScore,
 			},
 			Similarity: sr.Similarity,
 		})
