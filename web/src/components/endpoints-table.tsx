@@ -1,6 +1,7 @@
 import { Endpoint } from "@/lib/types";
 import { ReliabilityPulse } from "./reliability-pulse";
 import { ReliabilityBar } from "./reliability-bar";
+import { HealthBadge } from "./health-badge";
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -64,6 +65,7 @@ export function EndpointsTable({ endpoints }: EndpointsTableProps) {
             </div>
           </div>
           <div className="flex items-center gap-4 shrink-0 pt-0.5">
+            <HealthBadge status={ep.healthStatus} latencyMs={ep.latencyMs} />
             <span className="text-xs font-mono text-ink-secondary tabular-nums">
               ${ep.paymentOptions?.[0]?.priceUsd.toFixed(4) ?? "\u2014"}/req
             </span>

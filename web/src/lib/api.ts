@@ -32,6 +32,9 @@ export interface ApiEndpoint {
   first_seen: string;
   last_crawled: string;
   reliability_score?: number;
+  health_status?: string;
+  latency_ms?: number;
+  last_probed_at?: string;
 }
 
 export interface ApiEndpointWithPayments {
@@ -70,6 +73,9 @@ export interface ApiStats {
   total_volume_usd: number;
   transactions_over_time: { date: string; count: number }[];
   avg_reliability: number;
+  alive_count: number;
+  dead_count: number;
+  unknown_count: number;
 }
 
 export async function fetchEndpoints(

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/yamanakbas/agora/internal/api"
 	"github.com/yamanakbas/agora/internal/cdp"
@@ -13,6 +14,7 @@ import (
 	"github.com/yamanakbas/agora/internal/crawler"
 	"github.com/yamanakbas/agora/internal/database"
 	"github.com/yamanakbas/agora/internal/indexer"
+	"github.com/yamanakbas/agora/internal/prober"
 	"github.com/yamanakbas/agora/internal/sync"
 )
 
@@ -36,6 +38,8 @@ func main() {
 		runIndex(cfg)
 	case "sync":
 		runSync(cfg)
+	case "probe":
+		runProbe(cfg)
 	case "serve":
 		runServe(cfg)
 	default:
@@ -53,6 +57,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  crawl     Crawl the Bazaar API and populate the database")
 	fmt.Fprintln(os.Stderr, "  index     Index on-chain x402 transactions from Base")
 	fmt.Fprintln(os.Stderr, "  sync      Sync V1 transactions from CDP SQL API")
+	fmt.Fprintln(os.Stderr, "  probe     Probe endpoints for x402 health and compliance")
 	fmt.Fprintln(os.Stderr, "  serve     Start the REST API server")
 }
 
@@ -136,6 +141,32 @@ func runIndex(cfg *config.Config) {
 	if err := runner.Run(ctx); err != nil {
 		log.Fatalf("Indexing failed: %v", err)
 	}
+}
+
+func runProbe(cfg *config.Config) {
+	ctx := context.Background()
+
+	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	repo := database.NewRepository(pool)
+	client := prober.NewClient(time.Duration(cfg.ProberTimeoutSecs) * time.Second)
+	runner := prober.NewRunner(client, repo, prober.Config{
+		Concurrency: cfg.ProberConcurrency,
+		BatchSize:   cfg.ProberBatchSize,
+		DomainDelay: time.Duration(cfg.ProberDomainDelayMs) * time.Millisecond,
+	})
+
+	log.Printf("Starting probe (concurrency=%d, timeout=%ds, domainDelay=%dms)",
+		cfg.ProberConcurrency, cfg.ProberTimeoutSecs, cfg.ProberDomainDelayMs)
+
+	if err := runner.Run(ctx); err != nil {
+		log.Fatalf("Probe failed: %v", err)
+	}
+	log.Println("Done.")
 }
 
 func runSync(cfg *config.Config) {

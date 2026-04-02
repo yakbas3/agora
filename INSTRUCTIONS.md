@@ -18,45 +18,67 @@ docker compose -f docker-compose.prod.yml up --build
 
 This starts all 4 services:
 
-| Service    | Port  | Description                              |
-|------------|-------|------------------------------------------|
-| PostgreSQL | 5433  | pgvector database, auto-seeded with 12,571 endpoints |
-| Embed      | 8100  | Python sidecar for text embeddings (all-MiniLM-L6-v2) |
-| API        | 8081  | Go REST API (search, list, stats)        |
-| Web        | 3000  | Next.js frontend with search and charts  |
+| Service    | Port  | Description                                          |
+|------------|-------|------------------------------------------------------|
+| PostgreSQL | 5433  | pgvector database, auto-seeded with full dataset     |
+| Embed      | 8100  | Python sidecar for text embeddings (all-MiniLM-L6-v2)|
+| API        | 8081  | Go REST API (search, list, stats, health data)       |
+| Web        | 3000  | Next.js frontend with search, charts, health badges  |
 
 **First startup takes ~2 minutes** (model download ~400MB). Subsequent starts are faster (model cached in Docker volume).
+
+The API container automatically runs database migrations on startup before serving. No manual migration step is needed.
 
 ## Verify It Works
 
 ### Web UI
-- http://localhost:3000 — Endpoints page (paginated, 12,571 endpoints)
-- http://localhost:3000/network — Network analytics (charts by chain, asset, price)
+- http://localhost:3000 — Endpoints page (search + reliability + health status badges)
 - http://localhost:3000/facilitators — Facilitator information
+- http://localhost:3000/transactions — Transaction explorer
 
 ### API Endpoints
 ```bash
-# Stats overview (total endpoints, domains, distributions)
+# Stats overview (includes alive_count, dead_count, unknown_count)
 curl http://localhost:8081/api/stats
 
-# List endpoints with pagination
+# List endpoints (includes health_status, latency_ms, last_probed_at)
 curl "http://localhost:8081/api/endpoints?limit=5&offset=0"
 
-# Get a single endpoint by ID
-curl http://localhost:8081/api/endpoints/<uuid>
-
-# Semantic search (natural language)
+# Semantic search
 curl -X POST http://localhost:8081/api/search \
   -H "Content-Type: application/json" \
   -d '{"query": "weather API", "limit": 5}'
+
+# Probe history for a specific endpoint
+curl http://localhost:8081/api/endpoints/<uuid>/probes
 ```
 
-### Search Examples
-Try these queries in the web UI search bar or via the API:
-- "weather API" — finds weather-related endpoints
-- "image generation" — finds AI image service endpoints
-- "cheap endpoints under a penny" — finds low-cost services
-- "crypto price feed" — finds cryptocurrency data endpoints
+### Verify Seed Data
+```bash
+# Connect to the database
+docker exec $(docker ps -q --filter ancestor=pgvector/pgvector:pg16) \
+  psql -U agora -d agora -c "
+    SELECT
+      COUNT(*) AS endpoints,
+      COUNT(*) FILTER (WHERE reliability_score > 0) AS scored,
+      COUNT(*) FILTER (WHERE health_status = 'alive') AS alive,
+      COUNT(*) FILTER (WHERE health_status = 'dead') AS dead
+    FROM endpoint_scores;
+  "
+```
+
+Expected output (approximate):
+```
+ endpoints | scored | alive | dead
+-----------+--------+-------+------
+     12571 |   3000+|  2000+|  500+
+```
+
+```bash
+# Verify probe results exist
+docker exec $(docker ps -q --filter ancestor=pgvector/pgvector:pg16) \
+  psql -U agora -d agora -c "SELECT COUNT(*) FROM probe_results;"
+```
 
 ## Tear Down
 
@@ -91,7 +113,7 @@ cp .env.example .env
 # Build
 go build -o agora.exe ./cmd/agora
 
-# Run migrations
+# Run migrations (required before first use and after pulling new code)
 ./agora.exe migrate
 
 # Start API server
@@ -117,22 +139,92 @@ npm run dev
 go test ./...
 ```
 
+## CLI Commands
+
+| Command              | Description                                                   |
+|----------------------|---------------------------------------------------------------|
+| `./agora.exe migrate`| Run database migrations (run once after pulling new code)     |
+| `./agora.exe crawl`  | Crawl Bazaar API → 12,571 endpoints + payment options         |
+| `./agora.exe sync`   | Sync V1 USDC transactions from CDP SQL API                    |
+| `./agora.exe index`  | Index V2 on-chain transactions (Alchemy RPC)                  |
+| `./agora.exe probe`  | Probe all endpoints for x402 health + compliance (see below)  |
+| `./agora.exe serve`  | Start REST API server on :8080                                |
+
+### Running the Probe Command
+
+The probe command makes HTTP requests to all 12,571 indexed endpoints, checks whether they respond with a proper x402 `402 Payment Required` response, records latency and payment metadata, and blends results into reliability scores.
+
+```bash
+./agora.exe probe
+```
+
+Expected output:
+```
+Probing 12571 endpoints (concurrency=20, timeout=10s, domainDelay=200ms)
+Progress: 500 / 12571 endpoints probed
+Progress: 1000 / 12571 endpoints probed
+...
+Refreshing endpoint_scores materialized view...
+Probe complete. 12571 endpoints probed.
+```
+
+**Duration:** ~15–30 minutes for the full dataset (20 concurrent requests, 10s timeout per request).
+
+**Configuration via .env:**
+```
+PROBER_CONCURRENCY=20      # Parallel HTTP requests (default: 20)
+PROBER_TIMEOUT_SECS=10     # Per-request timeout in seconds (default: 10)
+PROBER_BATCH_SIZE=500      # Endpoints loaded from DB per batch (default: 500)
+PROBER_DOMAIN_DELAY_MS=200 # Min milliseconds between requests to same domain (default: 200)
+```
+
+## Reproducibility: Updating the Seed
+
+The `data/seed.sql.gz` file is committed to the repository and loaded automatically by Docker on first startup. It contains a complete database snapshot including endpoints, transactions, probe results, and pre-computed scores.
+
+**To regenerate the seed after running the probe command:**
+
+```bash
+# 1. Start the database
+docker compose up -d
+
+# 2. Run migrations
+./agora.exe migrate
+
+# 3. Run the probe (takes 15-30 minutes)
+./agora.exe probe
+
+# 4. Dump the updated database to seed.sql.gz
+docker exec $(docker ps -q --filter ancestor=pgvector/pgvector:pg16) \
+  pg_dump -U agora agora | gzip > data/seed.sql.gz
+
+# 5. Verify the seed includes probe results
+zcat data/seed.sql.gz | grep -c "INSERT INTO probe_results"
+
+# 6. Commit the new seed
+git add data/seed.sql.gz
+git commit -m "chore: update seed with probe results"
+```
+
+After committing, `docker compose -f docker-compose.prod.yml up --build` will load the seed with all probe data pre-populated — TAs see health badges and alive/dead counts immediately without needing to run `probe` themselves.
+
 ## Project Structure
 
 ```
 agora/
-├── cmd/agora/          # CLI entrypoint (migrate, crawl, index, serve)
+├── cmd/agora/          # CLI entrypoint (migrate, crawl, index, sync, probe, serve)
 ├── internal/
 │   ├── api/            # REST API server, handlers, embed client
 │   ├── config/         # Environment-based configuration
 │   ├── crawler/        # Bazaar API client, normalizer, runner
 │   ├── database/       # PostgreSQL pool, migrations, repository
 │   ├── indexer/        # On-chain V2 transaction indexer
-│   └── models/         # Domain models (Endpoint, PaymentOption, etc.)
-├── migrations/         # SQL migration files
+│   ├── prober/         # x402 health check prober (client, runner, types)
+│   └── models/         # Domain models (Endpoint, PaymentOption, ProbeResult, etc.)
+├── migrations/         # SQL migration files (000001–000012)
 ├── embed/              # Python embedding sidecar (FastAPI + sentence-transformers)
 ├── web/                # Next.js frontend (React, Tailwind, Recharts)
-├── data/               # Database seed dump (seed.sql.gz)
+├── data/               # Database seed dump (seed.sql.gz) — includes probe results
 ├── docs/               # Design documents and implementation plans
 ├── docker-compose.yml  # Dev database only
 └── docker-compose.prod.yml  # Full production stack (4 services)
@@ -142,5 +234,8 @@ agora/
 
 - **Semantic search** uses all-MiniLM-L6-v2 (384-dim vectors) via a Python sidecar, stored in pgvector with HNSW indexing for fast cosine similarity search
 - **Go API** handles all business logic; Python is only used for ML inference
-- **Database seed** (`data/seed.sql.gz`) is committed so reviewers get the full dataset without needing to crawl
+- **Reliability scoring** blends on-chain transaction signals (tx count, volume, payer diversity, recency) with x402 health probe results into a 0–100 composite score
+- **Health probing** makes unauthenticated HTTP requests to endpoints, verifies they return HTTP 402 with valid x402 payment instructions, detects price discrepancies
+- **Database seed** (`data/seed.sql.gz`) is committed so reviewers get the full dataset without needing to crawl, sync, or probe
 - **Multi-stage Docker builds** keep images small (Go: ~100MB, Web: ~150MB)
+- **Migrations run automatically** inside the API Docker container via `entrypoint.sh` before starting the server

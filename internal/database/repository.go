@@ -333,7 +333,10 @@ func buildSearchQuery(filters SearchFilters, limit int) (string, []any) {
 			e.description, e.http_method, e.input_schema, e.output_schema,
 			e.raw_metadata, e.last_updated, e.first_seen, e.last_crawled,
 			1 - (e.embedding <=> $1) AS similarity,
-			COALESCE(es.reliability_score, 0) AS reliability_score
+			COALESCE(es.reliability_score, 0) AS reliability_score,
+			COALESCE(es.health_status, 'unknown') AS health_status,
+			COALESCE(es.latency_ms, 0) AS latency_ms,
+			es.last_probed_at
 		FROM endpoints e
 		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
 		%s
@@ -368,6 +371,7 @@ func (r *Repository) SearchByVector(ctx context.Context, vector pgvector.Vector,
 			&sr.Endpoint.HTTPMethod, &sr.Endpoint.InputSchema, &sr.Endpoint.OutputSchema,
 			&sr.Endpoint.RawMetadata, &sr.Endpoint.LastUpdated, &sr.Endpoint.FirstSeen,
 			&sr.Endpoint.LastCrawled, &sr.Similarity, &sr.Endpoint.ReliabilityScore,
+			&sr.Endpoint.HealthStatus, &sr.Endpoint.LatencyMs, &sr.Endpoint.LastProbedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
@@ -383,7 +387,10 @@ func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]mod
 		SELECT e.id, e.resource_url, e.domain, e.type, e.x402_version, e.description,
 		       e.http_method, e.input_schema, e.output_schema, e.raw_metadata,
 		       e.last_updated, e.first_seen, e.last_crawled,
-		       COALESCE(es.reliability_score, 0)
+		       COALESCE(es.reliability_score, 0),
+		       COALESCE(es.health_status, 'unknown'),
+		       COALESCE(es.latency_ms, 0),
+		       es.last_probed_at
 		FROM endpoints e
 		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
 		ORDER BY e.last_crawled DESC
@@ -402,7 +409,7 @@ func (r *Repository) GetEndpoints(ctx context.Context, limit, offset int) ([]mod
 			&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
 			&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
 			&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
-			&e.ReliabilityScore,
+			&e.ReliabilityScore, &e.HealthStatus, &e.LatencyMs, &e.LastProbedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan endpoint: %w", err)
@@ -418,7 +425,10 @@ func (r *Repository) GetEndpointByID(ctx context.Context, id uuid.UUID) (*models
 		SELECT e.id, e.resource_url, e.domain, e.type, e.x402_version, e.description,
 		       e.http_method, e.input_schema, e.output_schema, e.raw_metadata,
 		       e.last_updated, e.first_seen, e.last_crawled,
-		       COALESCE(es.reliability_score, 0)
+		       COALESCE(es.reliability_score, 0),
+		       COALESCE(es.health_status, 'unknown'),
+		       COALESCE(es.latency_ms, 0),
+		       es.last_probed_at
 		FROM endpoints e
 		LEFT JOIN endpoint_scores es ON es.endpoint_id = e.id
 		WHERE e.id = $1
@@ -428,7 +438,7 @@ func (r *Repository) GetEndpointByID(ctx context.Context, id uuid.UUID) (*models
 		&e.ID, &e.ResourceURL, &e.Domain, &e.Type, &e.X402Version,
 		&e.Description, &e.HTTPMethod, &e.InputSchema, &e.OutputSchema,
 		&e.RawMetadata, &e.LastUpdated, &e.FirstSeen, &e.LastCrawled,
-		&e.ReliabilityScore,
+		&e.ReliabilityScore, &e.HealthStatus, &e.LatencyMs, &e.LastProbedAt,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get endpoint: %w", err)
@@ -475,6 +485,9 @@ type StatsResult struct {
 	TotalVolumeUSD       float64            `json:"total_volume_usd"`
 	TransactionsOverTime []DateCount        `json:"transactions_over_time"`
 	AvgReliability       float64            `json:"avg_reliability"`
+	AliveCount           int                `json:"alive_count"`
+	DeadCount            int                `json:"dead_count"`
+	UnknownCount         int                `json:"unknown_count"`
 }
 
 type NameCount struct {
@@ -610,6 +623,15 @@ func (r *Repository) GetStats(ctx context.Context) (*StatsResult, error) {
 	r.pool.QueryRow(ctx,
 		`SELECT COALESCE(AVG(reliability_score), 0) FROM endpoint_scores WHERE reliability_score > 0`,
 	).Scan(&s.AvgReliability)
+
+	// Health status breakdown
+	r.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE health_status = 'alive'),
+			COUNT(*) FILTER (WHERE health_status = 'dead'),
+			COUNT(*) FILTER (WHERE health_status = 'unknown')
+		FROM endpoint_scores
+	`).Scan(&s.AliveCount, &s.DeadCount, &s.UnknownCount)
 
 	// Transactions over time (daily, last 30 days)
 	rows6, err := r.pool.Query(ctx,
@@ -825,4 +847,202 @@ func (r *Repository) UpdateFacilitatorSyncTime(ctx context.Context, id uuid.UUID
 		return fmt.Errorf("update facilitator sync time: %w", err)
 	}
 	return nil
+}
+
+// GetTotalEndpointCount returns the total number of endpoints.
+func (r *Repository) GetTotalEndpointCount(ctx context.Context) (int, error) {
+	var n int
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM endpoints`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count endpoints: %w", err)
+	}
+	return n, nil
+}
+
+// ProbeTarget is returned by GetEndpointsForProbing.
+// Import cycle avoidance: we define it here rather than in internal/prober.
+type ProbeTarget struct {
+	EndpointID     uuid.UUID
+	ResourceURL    string
+	HTTPMethod     string
+	Domain         string
+	PaymentOptions []PaymentRef
+}
+
+// PaymentRef is a lightweight snapshot of a payment option for probe comparison.
+type PaymentRef struct {
+	PayTo     string
+	AmountRaw string
+	Network   string
+	Asset     string
+	PriceUSD  float64
+}
+
+// GetEndpointsForProbing returns a batch of endpoints with their payment options.
+// Pagination is by endpoint, not by row.
+func (r *Repository) GetEndpointsForProbing(ctx context.Context, limit, offset int) ([]ProbeTarget, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT e.id, e.resource_url, e.http_method, e.domain,
+		       po.pay_to, po.max_amount_raw, po.network_normalized, po.asset_address, po.price_usd
+		FROM (SELECT id, resource_url, http_method, domain FROM endpoints ORDER BY id LIMIT $1 OFFSET $2) e
+		LEFT JOIN payment_options po ON po.endpoint_id = e.id
+	`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("get endpoints for probing: %w", err)
+	}
+	defer rows.Close()
+
+	// Collect rows, grouping payment options per endpoint.
+	type row struct {
+		EndpointID  uuid.UUID
+		ResourceURL string
+		HTTPMethod  string
+		Domain      string
+		PayTo       *string
+		AmountRaw   *string
+		Network     *string
+		Asset       *string
+		PriceUSD    *float64
+	}
+
+	// Use a map to deduplicate endpoints while collecting payment options.
+	orderMap := make(map[uuid.UUID]int)
+	var order []uuid.UUID
+	targets := make(map[uuid.UUID]*ProbeTarget)
+
+	for rows.Next() {
+		var rw row
+		if err := rows.Scan(
+			&rw.EndpointID, &rw.ResourceURL, &rw.HTTPMethod, &rw.Domain,
+			&rw.PayTo, &rw.AmountRaw, &rw.Network, &rw.Asset, &rw.PriceUSD,
+		); err != nil {
+			return nil, fmt.Errorf("scan probe target: %w", err)
+		}
+
+		if _, seen := orderMap[rw.EndpointID]; !seen {
+			orderMap[rw.EndpointID] = len(order)
+			order = append(order, rw.EndpointID)
+			targets[rw.EndpointID] = &ProbeTarget{
+				EndpointID:  rw.EndpointID,
+				ResourceURL: rw.ResourceURL,
+				HTTPMethod:  rw.HTTPMethod,
+				Domain:      rw.Domain,
+			}
+		}
+
+		if rw.PayTo != nil {
+			ref := PaymentRef{PayTo: *rw.PayTo}
+			if rw.AmountRaw != nil {
+				ref.AmountRaw = *rw.AmountRaw
+			}
+			if rw.Network != nil {
+				ref.Network = *rw.Network
+			}
+			if rw.Asset != nil {
+				ref.Asset = *rw.Asset
+			}
+			if rw.PriceUSD != nil {
+				ref.PriceUSD = *rw.PriceUSD
+			}
+			targets[rw.EndpointID].PaymentOptions = append(targets[rw.EndpointID].PaymentOptions, ref)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]ProbeTarget, len(order))
+	for i, id := range order {
+		result[i] = *targets[id]
+	}
+	return result, nil
+}
+
+// InsertProbeResults batch-inserts probe results, ignoring duplicates.
+func (r *Repository) InsertProbeResults(ctx context.Context, results []models.ProbeResult) (int, error) {
+	if len(results) == 0 {
+		return 0, nil
+	}
+
+	batch := &pgx.Batch{}
+	for _, pr := range results {
+		batch.Queue(`
+			INSERT INTO probe_results (
+				id, endpoint_id, probed_at, status_code, latency_ms,
+				health_status, is_valid_402, error_message,
+				response_pay_to, response_amount_raw, response_network, response_asset,
+				price_match, discrepancy_details
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			pr.ID, pr.EndpointID, pr.ProbedAt, pr.StatusCode, pr.LatencyMs,
+			pr.HealthStatus, pr.IsValid402, nullStr(pr.ErrorMessage),
+			nullStr(pr.ResponsePayTo), nullStr(pr.ResponseAmountRaw),
+			nullStr(pr.ResponseNetwork), nullStr(pr.ResponseAsset),
+			pr.PriceMatch, nullJSON(pr.DiscrepancyDetails),
+		)
+	}
+
+	br := r.pool.SendBatch(ctx, batch)
+	inserted := 0
+	for range results {
+		ct, err := br.Exec()
+		if err != nil {
+			br.Close()
+			return inserted, fmt.Errorf("insert probe result: %w", err)
+		}
+		if ct.RowsAffected() > 0 {
+			inserted++
+		}
+	}
+	br.Close()
+	return inserted, nil
+}
+
+// GetProbeHistory returns the last N probe results for an endpoint.
+func (r *Repository) GetProbeHistory(ctx context.Context, endpointID uuid.UUID, limit int) ([]models.ProbeResult, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, endpoint_id, probed_at, status_code, latency_ms,
+		       health_status, is_valid_402,
+		       COALESCE(error_message, ''),
+		       COALESCE(response_pay_to, ''), COALESCE(response_amount_raw, ''),
+		       COALESCE(response_network, ''), COALESCE(response_asset, ''),
+		       price_match, discrepancy_details
+		FROM probe_results
+		WHERE endpoint_id = $1
+		ORDER BY probed_at DESC
+		LIMIT $2
+	`, endpointID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get probe history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.ProbeResult
+	for rows.Next() {
+		var pr models.ProbeResult
+		if err := rows.Scan(
+			&pr.ID, &pr.EndpointID, &pr.ProbedAt, &pr.StatusCode, &pr.LatencyMs,
+			&pr.HealthStatus, &pr.IsValid402, &pr.ErrorMessage,
+			&pr.ResponsePayTo, &pr.ResponseAmountRaw, &pr.ResponseNetwork, &pr.ResponseAsset,
+			&pr.PriceMatch, &pr.DiscrepancyDetails,
+		); err != nil {
+			return nil, fmt.Errorf("scan probe result: %w", err)
+		}
+		out = append(out, pr)
+	}
+	return out, rows.Err()
+}
+
+// nullStr returns nil for empty strings so the DB stores NULL.
+func nullStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// nullJSON returns nil for empty/null JSON so the DB stores NULL.
+func nullJSON(b []byte) interface{} {
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	return b
 }

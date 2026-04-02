@@ -24,4 +24,7 @@ type Endpoint struct {
 	LastCrawled  time.Time       `db:"last_crawled" json:"last_crawled"`
 	Embedding        pgvector.Vector `db:"embedding" json:"-"`
 	ReliabilityScore float64         `db:"reliability_score" json:"reliability_score"`
+	HealthStatus     string          `db:"health_status"     json:"health_status,omitempty"`
+	LatencyMs        int             `db:"latency_ms"        json:"latency_ms,omitempty"`
+	LastProbedAt     *time.Time      `db:"last_probed_at"    json:"last_probed_at,omitempty"`
 }

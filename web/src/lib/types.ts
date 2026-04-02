@@ -13,6 +13,9 @@ export interface Endpoint {
   lastCrawled: string;
   reliabilityScore?: number;
   reliabilityTrend?: number[];
+  healthStatus?: "alive" | "dead" | "unknown";
+  latencyMs?: number;
+  lastProbedAt?: string;
   paymentOptions: PaymentOption[];
 }
 
@@ -61,6 +64,9 @@ export interface NetworkStats {
   endpointsOverTime: { date: string; count: number }[];
   crawlHistory: CrawlRun[];
   avgReliability: number;
+  aliveCount: number;
+  deadCount: number;
+  unknownCount: number;
 }
 
 export interface FacilitatorStats {

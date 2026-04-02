@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
 	"github.com/yamanakbas/agora/internal/database"
+	"github.com/yamanakbas/agora/internal/models"
 )
 
 type Handlers struct {
@@ -46,16 +47,40 @@ type SearchResultJSON struct {
 }
 
 type EndpointJSON struct {
-	ID           string          `json:"id"`
-	ResourceURL  string          `json:"resource_url"`
-	Domain       string          `json:"domain"`
-	Type         string          `json:"type"`
-	X402Version  int             `json:"x402_version"`
-	Description  string          `json:"description"`
-	HTTPMethod   string          `json:"http_method"`
-	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
+	ID               string          `json:"id"`
+	ResourceURL      string          `json:"resource_url"`
+	Domain           string          `json:"domain"`
+	Type             string          `json:"type"`
+	X402Version      int             `json:"x402_version"`
+	Description      string          `json:"description"`
+	HTTPMethod       string          `json:"http_method"`
+	InputSchema      json.RawMessage `json:"input_schema,omitempty"`
 	OutputSchema     json.RawMessage `json:"output_schema,omitempty"`
 	ReliabilityScore float64         `json:"reliability_score"`
+	HealthStatus     string          `json:"health_status,omitempty"`
+	LatencyMs        int             `json:"latency_ms,omitempty"`
+	LastProbedAt     string          `json:"last_probed_at,omitempty"`
+}
+
+func endpointToJSON(e models.Endpoint) EndpointJSON {
+	ej := EndpointJSON{
+		ID:               e.ID.String(),
+		ResourceURL:      e.ResourceURL,
+		Domain:           e.Domain,
+		Type:             e.Type,
+		X402Version:      e.X402Version,
+		Description:      e.Description,
+		HTTPMethod:       e.HTTPMethod,
+		InputSchema:      e.InputSchema,
+		OutputSchema:     e.OutputSchema,
+		ReliabilityScore: e.ReliabilityScore,
+		HealthStatus:     e.HealthStatus,
+		LatencyMs:        e.LatencyMs,
+	}
+	if e.LastProbedAt != nil {
+		ej.LastProbedAt = e.LastProbedAt.Format(time.RFC3339)
+	}
+	return ej
 }
 
 func (h *Handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -106,18 +131,7 @@ func (h *Handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, sr := range results {
 		resp.Results = append(resp.Results, SearchResultJSON{
-			Endpoint: EndpointJSON{
-				ID:           sr.Endpoint.ID.String(),
-				ResourceURL:  sr.Endpoint.ResourceURL,
-				Domain:       sr.Endpoint.Domain,
-				Type:         sr.Endpoint.Type,
-				X402Version:  sr.Endpoint.X402Version,
-				Description:  sr.Endpoint.Description,
-				HTTPMethod:   sr.Endpoint.HTTPMethod,
-				InputSchema:  sr.Endpoint.InputSchema,
-				OutputSchema:     sr.Endpoint.OutputSchema,
-			ReliabilityScore: sr.Endpoint.ReliabilityScore,
-			},
+			Endpoint: endpointToJSON(sr.Endpoint),
 			Similarity: sr.Similarity,
 		})
 	}
@@ -224,4 +238,23 @@ func (h *Handlers) handleEndpointByID(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handlers) handleEndpointProbes(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, "invalid endpoint ID", http.StatusBadRequest)
+		return
+	}
+
+	probes, err := h.repo.GetProbeHistory(r.Context(), id, 10)
+	if err != nil {
+		log.Printf("get probe history error: %v", err)
+		http.Error(w, "failed to get probe history", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(probes)
 }

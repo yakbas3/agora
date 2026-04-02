@@ -20,6 +20,10 @@ type Config struct {
 	APIPort            string `envconfig:"API_PORT" default:"8080"`
 	CDPAPIKeyID        string `envconfig:"CDP_API_KEY_ID"`
 	CDPAPIKeySecret    string `envconfig:"CDP_API_KEY_SECRET"`
+	ProberConcurrency  int    `envconfig:"PROBER_CONCURRENCY"   default:"20"`
+	ProberTimeoutSecs  int    `envconfig:"PROBER_TIMEOUT_SECS"  default:"10"`
+	ProberBatchSize    int    `envconfig:"PROBER_BATCH_SIZE"    default:"500"`
+	ProberDomainDelayMs int   `envconfig:"PROBER_DOMAIN_DELAY_MS" default:"200"`
 }
 
 func Load() (*Config, error) {

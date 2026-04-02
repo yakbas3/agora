@@ -37,6 +37,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/search", s.handlers.handleSearch)
 	mux.HandleFunc("GET /api/endpoints", s.handlers.handleEndpoints)
 	mux.HandleFunc("GET /api/endpoints/{id}", s.handlers.handleEndpointByID)
+	mux.HandleFunc("GET /api/endpoints/{id}/probes", s.handlers.handleEndpointProbes)
 	mux.HandleFunc("GET /api/stats", s.handlers.handleStats)
 	mux.HandleFunc("GET /api/facilitators", s.handlers.handleFacilitators)
 	mux.HandleFunc("GET /api/transactions", s.handlers.handleTransactions)
