@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/yamanakbas/agora/internal/api"
@@ -56,7 +57,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  migrate   Run database migrations")
 	fmt.Fprintln(os.Stderr, "  crawl     Crawl the Bazaar API and populate the database")
 	fmt.Fprintln(os.Stderr, "  index     Index on-chain x402 transactions from Base")
-	fmt.Fprintln(os.Stderr, "  sync      Sync V1 transactions from CDP SQL API")
+	fmt.Fprintln(os.Stderr, "  sync [--missing|name]  Sync V1 transactions from CDP SQL API. No arg = all, --missing = only facilitators with 0 txns, name = filter by facilitator name")
 	fmt.Fprintln(os.Stderr, "  probe     Probe endpoints for x402 health and compliance")
 	fmt.Fprintln(os.Stderr, "  serve     Start the REST API server")
 }
@@ -144,6 +145,18 @@ func runIndex(cfg *config.Config) {
 }
 
 func runProbe(cfg *config.Config) {
+	// Optional positional arg: cap the number of endpoints probed (smoke test).
+	//   `agora probe`       → probe all endpoints
+	//   `agora probe 100`   → probe at most 100 endpoints
+	maxEndpoints := 0
+	if len(os.Args) >= 3 {
+		n, err := strconv.Atoi(os.Args[2])
+		if err != nil || n <= 0 {
+			log.Fatalf("probe: optional limit must be a positive integer, got %q", os.Args[2])
+		}
+		maxEndpoints = n
+	}
+
 	ctx := context.Background()
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
@@ -155,13 +168,19 @@ func runProbe(cfg *config.Config) {
 	repo := database.NewRepository(pool)
 	client := prober.NewClient(time.Duration(cfg.ProberTimeoutSecs) * time.Second)
 	runner := prober.NewRunner(client, repo, prober.Config{
-		Concurrency: cfg.ProberConcurrency,
-		BatchSize:   cfg.ProberBatchSize,
-		DomainDelay: time.Duration(cfg.ProberDomainDelayMs) * time.Millisecond,
+		Concurrency:  cfg.ProberConcurrency,
+		BatchSize:    cfg.ProberBatchSize,
+		DomainDelay:  time.Duration(cfg.ProberDomainDelayMs) * time.Millisecond,
+		MaxEndpoints: maxEndpoints,
 	})
 
-	log.Printf("Starting probe (concurrency=%d, timeout=%ds, domainDelay=%dms)",
-		cfg.ProberConcurrency, cfg.ProberTimeoutSecs, cfg.ProberDomainDelayMs)
+	if maxEndpoints > 0 {
+		log.Printf("Starting probe (max=%d, concurrency=%d, timeout=%ds, domainDelay=%dms)",
+			maxEndpoints, cfg.ProberConcurrency, cfg.ProberTimeoutSecs, cfg.ProberDomainDelayMs)
+	} else {
+		log.Printf("Starting probe (concurrency=%d, timeout=%ds, domainDelay=%dms)",
+			cfg.ProberConcurrency, cfg.ProberTimeoutSecs, cfg.ProberDomainDelayMs)
+	}
 
 	if err := runner.Run(ctx); err != nil {
 		log.Fatalf("Probe failed: %v", err)
@@ -172,6 +191,15 @@ func runProbe(cfg *config.Config) {
 func runSync(cfg *config.Config) {
 	if cfg.CDPAPIKeyID == "" || cfg.CDPAPIKeySecret == "" {
 		log.Fatal("CDP_API_KEY_ID and CDP_API_KEY_SECRET are required for syncing. Set them in .env or environment.")
+	}
+
+	// Optional positional arg:
+	//   `agora sync`            → sync all facilitators
+	//   `agora sync --missing`  → sync only facilitators with zero transactions
+	//   `agora sync Coinbase`   → sync facilitators matching the given name
+	var arg string
+	if len(os.Args) >= 3 {
+		arg = os.Args[2]
 	}
 
 	ctx := context.Background()
@@ -190,9 +218,22 @@ func runSync(cfg *config.Config) {
 	repo := database.NewRepository(pool)
 	runner := sync.NewRunner(cdpClient, repo)
 
-	log.Println("Starting V1 transaction sync...")
-	if err := runner.Run(ctx); err != nil {
-		log.Fatalf("Sync failed: %v", err)
+	switch arg {
+	case "":
+		log.Println("Starting V1 transaction sync...")
+		if err := runner.Run(ctx); err != nil {
+			log.Fatalf("Sync failed: %v", err)
+		}
+	case "--missing":
+		log.Println("Starting V1 transaction sync (missing facilitators only)...")
+		if err := runner.RunMissing(ctx); err != nil {
+			log.Fatalf("Sync failed: %v", err)
+		}
+	default:
+		log.Printf("Starting V1 transaction sync (facilitator filter: %q)...", arg)
+		if err := runner.RunFiltered(ctx, arg); err != nil {
+			log.Fatalf("Sync failed: %v", err)
+		}
 	}
 	log.Println("Done.")
 }

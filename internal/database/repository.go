@@ -733,6 +733,35 @@ func (r *Repository) GetBaseFacilitators(ctx context.Context) ([]models.Facilita
 	return out, rows.Err()
 }
 
+// GetBaseFacilitatorsMissingTransactions returns facilitators on Base that have
+// zero matching rows in the transactions table. Useful for resuming a partial
+// import without re-hitting CDP for addresses we already indexed.
+func (r *Repository) GetBaseFacilitatorsMissingTransactions(ctx context.Context) ([]models.Facilitator, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT f.id, f.name, f.chain, f.address, f.last_synced_at, f.created_at
+		FROM facilitators f
+		LEFT JOIN transactions t
+		  ON lower(t.facilitator_address) = lower(f.address)
+		WHERE f.chain = 'base'
+		GROUP BY f.id, f.name, f.chain, f.address, f.last_synced_at, f.created_at
+		HAVING COUNT(t.id) = 0
+		ORDER BY f.name, f.address`)
+	if err != nil {
+		return nil, fmt.Errorf("get missing facilitators: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Facilitator
+	for rows.Next() {
+		var f models.Facilitator
+		if err := rows.Scan(&f.ID, &f.Name, &f.Chain, &f.Address, &f.LastSyncedAt, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan facilitator: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // FacilitatorStats holds a facilitator with aggregated transaction stats.
 type FacilitatorStats struct {
 	models.Facilitator
@@ -847,6 +876,21 @@ func (r *Repository) UpdateFacilitatorSyncTime(ctx context.Context, id uuid.UUID
 		return fmt.Errorf("update facilitator sync time: %w", err)
 	}
 	return nil
+}
+
+// GetMaxBlockTimeForFacilitator returns the most recent block_time stored for a
+// given facilitator address (case-insensitive). Returns nil if no transactions
+// are stored for that address — the caller should fall back to a default start.
+func (r *Repository) GetMaxBlockTimeForFacilitator(ctx context.Context, facilitatorAddress string) (*time.Time, error) {
+	var t *time.Time
+	err := r.pool.QueryRow(ctx,
+		`SELECT MAX(block_time) FROM transactions
+		 WHERE lower(facilitator_address) = lower($1)`,
+		facilitatorAddress).Scan(&t)
+	if err != nil {
+		return nil, fmt.Errorf("max block_time for facilitator: %w", err)
+	}
+	return t, nil
 }
 
 // GetTotalEndpointCount returns the total number of endpoints.
@@ -994,6 +1038,69 @@ func (r *Repository) InsertProbeResults(ctx context.Context, results []models.Pr
 	}
 	br.Close()
 	return inserted, nil
+}
+
+// ApplyProbeUpdates writes drifted payment details back to the payment_options
+// table. For each probe result where is_valid_402 is true, price_match is
+// false, and the live response has a pay_to + amount + network + asset, it
+// updates the matching payment_options row(s) in place. Scales price_usd by the
+// amount ratio so USD-denominated price stays consistent.
+//
+// Matching is case-insensitive on network_normalized + asset_address. If the
+// endpoint has multiple payment options matching those keys, they all get the
+// same update — which is the correct behaviour, since they represent the same
+// payment route.
+//
+// Returns the number of payment_options rows updated.
+func (r *Repository) ApplyProbeUpdates(ctx context.Context, results []models.ProbeResult) (int, error) {
+	if len(results) == 0 {
+		return 0, nil
+	}
+
+	batch := &pgx.Batch{}
+	queued := 0
+	for _, pr := range results {
+		if !pr.IsValid402 || pr.PriceMatch {
+			continue
+		}
+		if pr.ResponsePayTo == "" || pr.ResponseAmountRaw == "" ||
+			pr.ResponseNetwork == "" || pr.ResponseAsset == "" {
+			continue
+		}
+		batch.Queue(`
+			UPDATE payment_options
+			SET pay_to = $2,
+			    max_amount_raw = $3,
+			    price_usd = CASE
+			      WHEN max_amount_raw ~ '^[0-9]+$'
+			           AND max_amount_raw::numeric > 0
+			           AND $3 ~ '^[0-9]+$'
+			      THEN price_usd * ($3::numeric / max_amount_raw::numeric)
+			      ELSE price_usd
+			    END
+			WHERE endpoint_id = $1
+			  AND lower(network_normalized) = lower($4)
+			  AND lower(asset_address) = lower($5)`,
+			pr.EndpointID, pr.ResponsePayTo, pr.ResponseAmountRaw,
+			pr.ResponseNetwork, pr.ResponseAsset,
+		)
+		queued++
+	}
+	if queued == 0 {
+		return 0, nil
+	}
+
+	br := r.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	updated := 0
+	for i := 0; i < queued; i++ {
+		ct, err := br.Exec()
+		if err != nil {
+			return updated, fmt.Errorf("apply probe update: %w", err)
+		}
+		updated += int(ct.RowsAffected())
+	}
+	return updated, nil
 }
 
 // GetProbeHistory returns the last N probe results for an endpoint.

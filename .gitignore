@@ -34,3 +34,11 @@ __pycache__/
 
 # Temporary files
 tmp_*
+
+# Local-only writeups and reference materials
+FINAL_REPORT.md
+PRESENTATION_PLAN.md
+CLAUDE_new.md
+Sample 1.pdf
+Sample 2.pdf
+

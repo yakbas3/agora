@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { SearchBar } from "@/components/search-bar";
 import { FilterChips } from "@/components/filter-chips";
 import { EndpointsTable } from "@/components/endpoints-table";
-import { fetchEndpoints, searchEndpoints } from "@/lib/api";
+import { fetchEndpoints, fetchStats, searchEndpoints } from "@/lib/api";
 import { transformEndpointWithPayments, transformSearchResult } from "@/lib/transforms";
 import type { Endpoint } from "@/lib/types";
 
@@ -15,12 +15,20 @@ const filterGroups = [
 
 export default function EndpointsPage() {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
-  const [total, setTotal] = useState(0);
+  const [totalIndexed, setTotalIndexed] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    fetchStats()
+      .then((s) => setTotalIndexed(s.total_endpoints))
+      .catch(() => {
+        // Silent fail — the count is a nice-to-have, not critical.
+      });
+  }, []);
 
   const load = useCallback(async (q: string, f: Record<string, string | null>) => {
     setLoading(true);
@@ -32,12 +40,9 @@ export default function EndpointsPage() {
         if (f.Method) apiFilters.method = f.Method;
         const res = await searchEndpoints(q, apiFilters, 20);
         setEndpoints((res.results || []).map(transformSearchResult));
-        setTotal(res.total);
       } else {
         const res = await fetchEndpoints(20, 0);
-        const transformed = (res || []).map(transformEndpointWithPayments);
-        setEndpoints(transformed);
-        setTotal(transformed.length);
+        setEndpoints((res || []).map(transformEndpointWithPayments));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -71,11 +76,28 @@ export default function EndpointsPage() {
             <span className="text-ink-tertiary">Loading...</span>
           ) : error ? (
             <span className="text-failure">{error}</span>
-          ) : (
+          ) : query ? (
             <>
               <span className="font-mono text-ink-primary">{endpoints.length}</span>{" "}
-              {query ? `results for "${query}"` : "endpoints"}{" "}
-              {query && <span className="text-ink-tertiary">(semantic search)</span>}
+              results for &ldquo;{query}&rdquo;{" "}
+              <span className="text-ink-tertiary">
+                (semantic search over {totalIndexed !== null ? totalIndexed.toLocaleString() : "—"} indexed endpoints)
+              </span>
+            </>
+          ) : (
+            <>
+              Showing{" "}
+              <span className="font-mono text-ink-primary">{endpoints.length}</span>
+              {totalIndexed !== null && (
+                <>
+                  {" "}of{" "}
+                  <span className="font-mono text-ink-primary">{totalIndexed.toLocaleString()}</span>
+                </>
+              )}{" "}
+              endpoints{" "}
+              <span className="text-ink-tertiary">
+                — search to find specific capabilities across the full index
+              </span>
             </>
           )}
         </p>

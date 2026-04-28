@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	mrand "math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,8 +122,7 @@ func (c *Client) generateJWT() (string, error) {
 }
 
 func (c *Client) executeQuery(sql string) ([]map[string]interface{}, error) {
-	const maxRetries = 5
-	backoff := 3 * time.Second
+	const maxRetries = 8
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		jwtToken, err := c.generateJWT()
@@ -150,9 +150,15 @@ func (c *Client) executeQuery(sql string) ([]map[string]interface{}, error) {
 		}
 
 		if resp.StatusCode == 429 && attempt < maxRetries {
-			log.Printf("      CDP 429 rate limited, retrying in %s (attempt %d/%d)", backoff, attempt+1, maxRetries)
-			time.Sleep(backoff)
-			backoff *= 2
+			// Exponential backoff with jitter, following x402scan's pattern:
+			// base 500ms * 2^attempt + random 0-200ms. Capped at 30s so we
+			// don't sleep forever on sustained pressure.
+			backoffMs := 500<<attempt + mrand.Intn(200)
+			if backoffMs > 30000 {
+				backoffMs = 30000
+			}
+			log.Printf("      CDP 429, retry in %dms (attempt %d/%d)", backoffMs, attempt+1, maxRetries)
+			time.Sleep(time.Duration(backoffMs) * time.Millisecond)
 			continue
 		}
 

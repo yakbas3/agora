@@ -19,6 +19,7 @@ type Repository interface {
 	GetEndpointsForProbing(ctx context.Context, limit, offset int) ([]database.ProbeTarget, error)
 	GetTotalEndpointCount(ctx context.Context) (int, error)
 	InsertProbeResults(ctx context.Context, results []models.ProbeResult) (int, error)
+	ApplyProbeUpdates(ctx context.Context, results []models.ProbeResult) (int, error)
 	RefreshEndpointScores(ctx context.Context) error
 }
 
@@ -27,6 +28,10 @@ type Config struct {
 	Concurrency int
 	BatchSize   int
 	DomainDelay time.Duration
+	// MaxEndpoints, when > 0, caps the total number of endpoints probed in this
+	// run. Useful for smoke-testing the pipeline without waiting 15-30 minutes
+	// for a full 12k sweep. 0 means unlimited.
+	MaxEndpoints int
 }
 
 // Runner orchestrates the full probe cycle over all endpoints.
@@ -47,8 +52,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("count endpoints: %w", err)
 	}
-	log.Printf("Probing %d endpoints (concurrency=%d, domainDelay=%s)",
-		total, r.cfg.Concurrency, r.cfg.DomainDelay)
+	if r.cfg.MaxEndpoints > 0 && r.cfg.MaxEndpoints < total {
+		log.Printf("Probing %d of %d endpoints (concurrency=%d, domainDelay=%s) — MaxEndpoints cap",
+			r.cfg.MaxEndpoints, total, r.cfg.Concurrency, r.cfg.DomainDelay)
+		total = r.cfg.MaxEndpoints
+	} else {
+		log.Printf("Probing %d endpoints (concurrency=%d, domainDelay=%s)",
+			total, r.cfg.Concurrency, r.cfg.DomainDelay)
+	}
 
 	// domainLast tracks when we last sent a request to a given domain.
 	var domainLast sync.Map
@@ -69,13 +80,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("insert probe results: %w", err)
 		}
-		log.Printf("  Inserted %d probe results", n)
+		updated, err := r.repo.ApplyProbeUpdates(ctx, batch)
+		if err != nil {
+			return fmt.Errorf("apply probe updates: %w", err)
+		}
+		log.Printf("  Inserted %d probe results, updated %d payment_options rows", n, updated)
 		return nil
 	}
 
 	probed := 0
 	for offset := 0; offset < total; offset += r.cfg.BatchSize {
-		dbTargets, err := r.repo.GetEndpointsForProbing(ctx, r.cfg.BatchSize, offset)
+		batchLimit := r.cfg.BatchSize
+		if remaining := total - offset; remaining < batchLimit {
+			batchLimit = remaining
+		}
+		dbTargets, err := r.repo.GetEndpointsForProbing(ctx, batchLimit, offset)
 		if err != nil {
 			return fmt.Errorf("load batch at offset %d: %w", offset, err)
 		}
